@@ -1,0 +1,88 @@
+\section{Introduction}
+\label{sec:intro}
+
+The optimal power flow (OPF) is a fundamental problem in power systems
+operations.  Its linear approximation, the DC-OPF model, underlies
+most electricity markets, especially in the US.  For instance, MISO
+uses a security-constrained economic dispatch (SCED) in their
+real-time markets, which has the DC-OPF model at its core
+\cite{BPM_002}.
+\revision{}{The continued growth in renewable and distributed energy resources (DERs) has caused an increase in operational uncertainty.
+This creates need for new methodologies and operating practices that can quantify and manage risk in real time \cite{MISO2023_ReliabilityImperative,Stover2023_ReliabilityRiskMetrics}.
+Nevertheless, quantifying the operational risk of a transmission system requires executing in the order of $10^{3}$ Monte Carlo (MC) simulations, each requiring the solution of multiple (typically in the hundreds) economic dispatch problems \cite{Stover2022_JITRALF,Stover2023_ReliabilityRiskMetrics}.
+To fit within the constraints of actual operations, real-time risk assessment would thus require solving hundreds of thousands of economic dispatch problems within a matter of seconds.
+This represents a 100,000x speedup over current optimization technology, which can typically solve economic dispatch problems in a few seconds.}
+
+In recent years, there has been a surge of interest, both from the
+power systems and Machine-Learning (ML) communities, in developing
+optimization proxies for OPF, i.e., ML models that approximate the
+input-output mapping of OPF problems.  The main idea is that, once
+trained, these proxies can be used to generate high-quality solutions
+orders of magnitude faster than traditional optimization solvers.
+This capability allows to evaluate a large number of scenarios fast,
+thereby enabling real-time risk assessment.
+
+There are however three major obstacles to the deployment of
+optimization proxies: \revision{}{feasibility, scalability and adaptability}.
+First, ML models are not guaranteed to satisfy
+the physical and engineering constraints of the model.  This causes
+obvious issues if, for instance, the goal is to use a proxy to
+evaluate whether the system is able to operate in a safe state.
+Several approaches have been proposed in the past to address the
+feasibility of ML predictions, each of which has some advantages
+and limitations.  Second, most results in ML for power systems has
+considered systems with up to 300 buses, far from the size of actual
+systems that contain thousands of buses. Moreover, the resulting
+techniques have not been proven to scale or be accurate enough on
+large-scale networks.  Third, power grids are not static: the
+generator commitments and the grid topology evolve over time,
+typically on an hourly basis \cite{Chen2022_Learning4SCED}.
+\revision{}{Likewise, the output of renewable generators such as wind and solar generators is non-stationary, which may degrade the performances of ML models.}
+Therefore, it is important to be able to (re)train models fast,
+typically within a few hours at most.  This obviously creates a
+computational bottleneck for approaches that rely on the offline
+solving of numerous optimization problems to generate training data.
+
+\revision{}{Despite significant interest from the community, no approach has thus far addressed all three challenges (feasibility, scalability and adaptability) in a unified way.}
+This paper addresses \revision{}{this gap} by proposing an {\em
+  End-to-End Learning and Repair} (E2ELR) architecture for a
+(MISO-inspired) economic dispatch (ED) formulation where the prediction and feasibility
+restoration are integrated in a single ML pipeline and trained
+jointly. The E2ELR-ED architecture guarantees feasibility, i.e., it
+always outputs a feasible solution to the economic dispatch.  The E2ELR-ED
+architecture achieves these results through {\em closed-form repair
+  layers}. Moreover, through the use of {\em self-supervised
+  learning}, the E2ELR-ED architecture is scalable, both for
+training and inference, and \revision{}{is found to produce} near-optimal solutions to systems
+with tens of thousands of buses.
+\revision{}{Finally, the use of self-supervised learning also avoids the costly data-generation process of supervised-learning methods.
+This allows to re-train the model fast, smoothly adapting to changing operating parameters and system conditions.}
+The contributions of the paper can therefore be summarized as follows:
+\begin{itemize}
+
+\item \revision{}{The paper proposes a novel E2ELR architecture with closed-form, differentiable repair layers, whose output is guaranteed to satisfy power balance and reserve requirements.
+This is the first architecture to consider reserve requirements, and to offer feasibility guarantees without restrictive assumptions.}
+
+\item \revision{}{The E2ELR model is trained in an end-to-end fashion that combines learning and feasibility restoration, making the approach scalable to large-scale systems.
+This contrasts to traditional approaches that restore feasibility at inference time,
+which increases computing time and induces significant losses in accuracy.}
+
+\item \revision{}{The paper proposes self-supervised learning to eliminate the need for offline generation of training data.
+The proposed E2ELR can thus be trained from scratch in under an hour, even for large systems.
+This allows to adapt to changing system conditions by re-training the model periodically.}
+
+\item \revision{}{The paper conducts extensive numerical experiments on systems with up to 30,000 buses, a 100x increase in size compared to most existing studies.
+The results demonstrate that the proposed self-supervised E2ELR architecture is highly scalable and outperforms other approaches.}
+\end{itemize}
+
+\noindent
+The rest of the paper is organized as follows.  Section
+\ref{sec:literature} surveys the relevant literature. Section
+\ref{sec:overview} presents an overview of the E2ELR architecture and
+contrast it with existing approaches.  Section \ref{sec:layers}
+presents the problem formulation and the E2ELR architecture in detail.
+Section \ref{sec:trainig_methodology} presents supervised and
+self-supervised training.  Section \ref{sec:experiments} describes the
+experiment setting, and Section \ref{sec:results} reports numerical
+results.  Section \ref{sec:conclusion} concludes the paper and
+discusses future research directions.

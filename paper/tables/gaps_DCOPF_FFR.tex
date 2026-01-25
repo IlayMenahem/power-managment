@@ -1,0 +1,23 @@
+\begin{tabular}{llrrrrrrrrrr}
+\toprule
+&& & \multicolumn{3}{c}{DNN} & \multicolumn{3}{c}{\revision{}{DeepOPF}} & \multicolumn{3}{c}{DC3}\\
+\cmidrule(lr){4-6}
+\cmidrule(lr){7-9}
+\cmidrule(lr){10-12}
+Loss & System         &    E2ELR & \multicolumn{1}{c}{--} & \multicolumn{1}{c}{FL} & \multicolumn{1}{c}{EP} & \multicolumn{1}{c}{--} & \multicolumn{1}{c}{FL} & \multicolumn{1}{c}{EP} & \multicolumn{1}{c}{--} & \multicolumn{1}{c}{FL} & \multicolumn{1}{c}{EP}\\
+\midrule
+SL   & \ieeeSmall     & \textbf{    1.42} &    69.55 &    36.33 &    36.37 &     \revision{}{2.81} &     \revision{}{2.81} &     \revision{}{2.81} &     3.03 &     3.03 &     3.03\\
+     & \pegaseSmall   & \textbf{    0.74} &    48.77 &     3.98 &     3.94 &     \revision{}{7.78} &     \revision{}{5.24} &     \revision{}{5.28} &     2.80 &     2.44 &     2.44\\
+     & \rteLarge      & \textbf{    1.35} &    55.13 &    21.28 &    21.41 &    \revision{}{28.23} &     \revision{}{1.89} &     \revision{}{1.89} &     3.68 &     3.36 &     3.36\\
+     & \pegaseLarge   & \textbf{    0.38} &    76.06 &    34.61 &    34.65 &    \revision{}{33.20} &     \revision{}{1.94} &     \revision{}{1.99} &     1.25 &     1.24 &     1.24\\
+     & \pegaseXLarge  & \textbf{    0.29} &    71.14 &    32.70 &    32.72 &    \revision{}{64.93} &    \revision{}{23.36} &    \revision{}{23.36} &     1.79 &     1.79 &     1.79\\
+     & \gocXXL        & \textbf{    0.46} &   194.13 &    57.53 &    57.41 &    \revision{}{55.91} &    \revision{}{30.19} &    \revision{}{30.16} &     2.75 &     2.45 &     2.45\\
+\midrule
+SSL  & \ieeeSmall     & \textbf{    0.74} &    35.66 &     3.82 &     3.73 &     \revision{}{2.23} &     \revision{}{2.23} &     \revision{}{2.23} &     2.51 &     2.51 &     2.51\\
+     & \pegaseSmall   & \textbf{    0.63} &    62.07 &     3.24 &     3.25 &    \revision{}{10.83} &     \revision{}{3.21} &     \revision{}{3.18} &     2.57 &     2.35 &     2.35\\
+     & \rteLarge      & \textbf{    1.30} &    40.73 &    11.52 &    11.47 &    \revision{}{42.28} &     \revision{}{5.38} &     \revision{}{5.37} &     2.82 &     2.10 &     2.09\\
+     & \pegaseLarge   & \textbf{    0.32} &    43.68 &     3.20 &     3.22 &    \revision{}{34.33} &     \revision{}{4.73} &     \revision{}{4.74} &     0.82 &     0.64 &     0.64\\
+     & \pegaseXLarge  & \textbf{    0.21} &    57.58 &    20.59 &    20.59 &    \revision{}{60.12} &    \revision{}{18.85} &    \revision{}{18.84} &     0.84 &     0.81 &     0.81\\
+     & \gocXXL        & \textbf{    0.39} &   108.91 &     7.89 &     7.89 &     \revision{}{8.39} &     \revision{}{3.06} &     \revision{}{3.06} &     0.72 &     0.62 &     0.62\\
+\bottomrule
+\end{tabular}

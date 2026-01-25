@@ -1,0 +1,25 @@
+\begin{algorithm}[ht]
+    \caption{Reserve Repair Layer}
+    \label{alg:FFR:reserves}
+    \begin{algorithmic}[1]
+        \REQUIRE Initial prediction $\pg \in \hypersimplex{D}$, maximum limits $\mathbf{\bar{p}}, \mathbf{\bar{r}}$, reserve requirement $R$
+        \STATE $\Delta_{R} \gets R - \sum_{g} \min \{ \bar{r}_{g}, \bar{p}_{g} - p_{g} \}$
+        \STATE $\mathcal{G}^{\uparrow} \gets \left\{ g \ \middle| \ p_{g} \leq \bar{p}_{g} - \bar{r}_{g} \right\}$
+        \STATE $\mathcal{G}^{\downarrow} \gets \left\{ g \ \middle| \  p_{g} > \bar{p}_{g} - \bar{r}_{g} \right\}$
+        \STATE $\Delta^{\uparrow} \gets \sum_{g \in \mathcal{G}^{\uparrow}} (\bar{p}_{g} - \bar{r}_{g}) - p_{g}$
+        \STATE $\Delta^{\downarrow} \gets \sum_{g \in \mathcal{G}^{\downarrow}} p_{g} - (\bar{p}_{g} - \bar{r}_{g})$
+        \STATE $\Delta \gets \max(0, \min(\Delta_{R}, \Delta^{\uparrow}, \Delta^{\downarrow}))$
+        \STATE $\alpha^{\uparrow} \gets \Delta / \Delta^{\uparrow}$, $\alpha^{\downarrow} \gets \Delta / \Delta^{\downarrow}$, \label{alg:FFR:proportional_response_weigths}
+        \STATE Energy dispatch adjustment
+            \begin{align*}
+                \tilde{p}_{g} &= \left\{
+                    \begin{array}{ll}
+                        (1 - \alpha^{\uparrow}) p_{g} + \alpha^{\uparrow} (\bar{p}_{g} - \bar{r}_{g}) & \forall g \in \mathcal{G}^{\uparrow} \\
+                        (1 - \alpha^{\downarrow}) p_{g} + \alpha^{\downarrow} (\bar{p}_{g} - \bar{r}_{g}) & \forall g \in \mathcal{G}^{\downarrow}
+                    \end{array}
+                \right.
+            \end{align*}
+            \label{alg:FFR:proportional_response}
+        \STATE \textbf{return} $\mathcal{R}(\pg) = \mathbf{\tilde{p}}$
+    \end{algorithmic}
+\end{algorithm}

@@ -1,0 +1,49 @@
+\documentclass[12pt]{article}
+
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{multicol}
+\usepackage{tikz}
+\usepackage{setspace}
+\usepackage{titlesec}
+
+\geometry{a4paper, margin=0.75in, top=0.8in, bottom=0.8in}
+\usetikzlibrary{shapes.geometric}
+
+\newcommand{\pg}{\mathbf{p}}
+\newcommand{\pgbar}{\mathbf{\bar{p}}}
+\newcommand{\pgmax}{\mathbf{\bar{p}}}
+\newcommand{\pd}{\mathbf{d}}
+\newcommand{\PTDF}{\Phi}
+\newcommand{\hypercube}{\mathcal{H}}
+\newcommand{\hypersimplex}[1]{\mathcal{S}_{#1}}
+\newcommand{\etaup}{\eta^{\uparrow}}
+\newcommand{\etadn}{\eta^{\downarrow}}
+
+\title{Paper Summary - End-to-End Feasible Optimization Proxies
+for Large-Scale Economic Dispatch}
+\author{Ilay Menachem}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\input{sections/nomenclature.tex}
+
+\input{sections/problem_statement.tex}
+
+\input{sections/introduction.tex}
+
+\input{sections/previous_works.tex}
+
+\input{sections/repair_layers.tex}
+
+\input{sections/experimental_results.tex}
+\end{document}

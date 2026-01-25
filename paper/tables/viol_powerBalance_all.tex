@@ -1,0 +1,68 @@
+% constraint violation (abs)
+\begin{tabular}{llrrrrrrrrrrrr}
+\toprule
+&
+    & \multicolumn{6}{c}{ED}
+    & \multicolumn{6}{c}{ED-R}\\
+\cmidrule(lr){3-8}
+\cmidrule(lr){9-14}
+     &               
+     & \multicolumn{2}{c}{DNN}
+     & \multicolumn{2}{c}{\revision{}{DeepOPF}}
+     & \multicolumn{2}{c}{DC3}
+     & \multicolumn{2}{c}{DNN}
+     & \multicolumn{2}{c}{\revision{}{DeepOPF}}
+     & \multicolumn{2}{c}{DC3}\\
+\cmidrule(lr){3-4}
+\cmidrule(lr){5-6}
+\cmidrule(lr){7-8}
+\cmidrule(lr){9-10}
+\cmidrule(lr){11-12}
+\cmidrule(lr){13-14}
+Loss & System        
+    & \multicolumn{1}{c}{\%feas} & \multicolumn{1}{c}{viol}
+    & \multicolumn{1}{c}{\%feas} & \multicolumn{1}{c}{viol}
+    & \multicolumn{1}{c}{\%feas} & \multicolumn{1}{c}{viol}
+    & \multicolumn{1}{c}{\%feas} & \multicolumn{1}{c}{viol}
+    & \multicolumn{1}{c}{\%feas} & \multicolumn{1}{c}{viol}
+    & \multicolumn{1}{c}{\%feas} & \multicolumn{1}{c}{viol}\\
+\midrule
+SL   & \ieeeSmall    
+         &      0\% &   0.50  &    \revision{}{100\%} &   \revision{}{0.00}  &    100\% &   0.00 
+         &      0\% &   0.70  &    \revision{}{100\%} &   \revision{}{0.06}  &    100\% &   0.25 \\
+     & \pegaseSmall  
+         &      0\% &   1.82  &     \revision{}{71\%} &   \revision{}{1.35}  &     65\% &   0.04 
+         &      0\% &   1.90  &     \revision{}{70\%} &   \revision{}{1.19}  &     65\% &   0.08 \\
+     & \rteLarge     
+         &      0\% &   2.08  &      \revision{}{1\%} &   \revision{}{1.94}  &      9\% &   0.03 
+         &      0\% &   2.26  &      \revision{}{1\%} &   \revision{}{2.81}  &      7\% &   0.01 \\
+     & \pegaseLarge  
+         &      0\% &   6.25  &      \revision{}{3\%} &   \revision{}{6.38}  &     29\% &   0.00 
+         &      0\% &   5.91  &      \revision{}{3\%} &   \revision{}{5.99}  &     29\% &   0.00 \\
+     & \pegaseXLarge 
+         &      0\% &   6.63  &      \revision{}{1\%} &   \revision{}{7.08}  &     23\% &   0.00 
+         &      0\% &   7.79  &      \revision{}{1\%} &   \revision{}{7.46}  &     22\% &   0.00 \\
+     & \gocXXL       
+         &      0\% &   3.81  &     \revision{}{45\%} &   \revision{}{1.70}  &     57\% &   0.03 
+         &      0\% &   2.31  &     \revision{}{54\%} &   \revision{}{1.54}  &     69\% &   0.00 \\
+\midrule
+SSL  & \ieeeSmall    
+         &      0\% &   0.58  &    \revision{}{100\%} &   \revision{}{0.00}  &    100\% &   0.16 
+         &      0\% &   0.73  &    \revision{}{100\%} &   \revision{}{0.56}  &    100\% &   0.29 \\
+     & \pegaseSmall  
+         &      0\% &   2.42  &     \revision{}{63\%} &   \revision{}{2.56}  &     63\% &   0.03 
+         &      0\% &   2.30  &     \revision{}{63\%} &   \revision{}{1.81}  &     39\% &   0.05 \\
+     & \rteLarge     
+         &      0\% &   1.90  &      \revision{}{1\%} &   \revision{}{2.64}  &      6\% &   0.11 
+         &      0\% &   2.72  &      \revision{}{1\%} &   \revision{}{2.51}  &      5\% &   0.01 \\
+     & \pegaseLarge  
+         &      0\% &   7.22  &      \revision{}{3\%} &   \revision{}{5.46}  &     27\% &   0.05 
+         &      0\% &   7.00  &      \revision{}{3\%} &   \revision{}{7.87}  &     25\% &   0.08 \\
+     & \pegaseXLarge 
+         &      0\% &   6.41  &      \revision{}{1\%} &   \revision{}{7.19}  &     19\% &   0.01 
+         &      0\% &   6.82  &      \revision{}{1\%} &   \revision{}{7.83}  &     20\% &   0.01 \\
+     & \gocXXL       
+         &      0\% &   3.18  &     \revision{}{55\%} &   \revision{}{1.24}  &     52\% &   0.01 
+         &      0\% &   2.61  &     \revision{}{49\%} &   \revision{}{1.20}  &     62\% &   0.02 \\
+\bottomrule
+\end{tabular}

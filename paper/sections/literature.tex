@@ -1,0 +1,170 @@
+\section{Related works}
+\label{sec:literature}
+
+
+\subsection{Optimization Proxies for OPF}
+\label{sec:literature:proxies}
+
+
+The majority of the existing literature on OPF proxies employs
+Supervised Learning (SL) techniques. Each data point $(x, y)$ consists
+of an OPF instance data ($x$) and its corresponding solution ($y$).
+The training data is obtained by solving a large number --usually tens
+of thousands-- of OPF instances offline.  The SL paradigm has
+successfully been applied both in the linear DCOPF
+\cite{Ng2018_StatisticalLearningDCOPF,pan2020deepopf,Nellikkath2021_PINN-DCOPF,zhao2022ensuring,Chen2022_Learning4SCED,stratigakos2023interpretable,Ferrando2023_PERFORM_NYU}
+and nonlinear, non-convex \revision{}{ACOPF
+\cite{Guha2019_ML4ACOPF,Zamzam2020_LearningOPF,Owerko2020_OPFusingGNN,fioretto2020predicting,chatzos2021spatial,donti2021dc3,nellikkath2022_PINN-ACOPF,pan2022deepopf,pan2022deepopf-AL,Zhou2022_DeepOPF-FT,liu2022topology,falconer2022leveraging,Owerko2022_unsupervisedOPFusingGNN,Pham2022_ReduceOPFwithGNN,gao2023physics,park2023compact,mitrovic2023data,gupta2022dnn}}
+settings.
+In almost all the above references, the generator
+commitments and grid topology are assumed to be fixed, with
+electricity demand being the only source of variability.  Therefore,
+these OPF proxies must be re-trained regularly to capture the hourly
+changes in commitments and topology that occur in real-life operations
+\cite{Chen2022_Learning4SCED}.  
+In a SL setting, this comes at a high computational cost because of the need to re-generate training data.
+Recent works consider active sampling techniques to reduce this burden
+\cite{Klamkin2022_ActiveBucketizedSampling,Hu2023_OPFWorthLearning}.
+\revision{}{References \cite{Owerko2020_OPFusingGNN,Owerko2022_unsupervisedOPFusingGNN,Pham2022_ReduceOPFwithGNN,gao2023physics} consider graph neural network (GNN) architectures to accommodate topology changes, however, numerical results are only reported on small networks with at most 300 buses.}
+
+Self-Supervised Learning (SSL) has emerged as an alternative to SL
+that does not require labeled data
+\cite{Huang2021_DeepOPF-NGT,wang2022fast,park2023self}.  Namely,
+training OPF proxies in a self-supervised fashion does \emph{not}
+require the solving of any OPF instance offline, thereby removing the
+need for (costly) data generation.  In \cite{Huang2021_DeepOPF-NGT},
+the authors train proxies for ACOPF where the training loss consists
+of the objective value of the predicted solution, plus a penalty term
+for constraint violations.  A similar approach is used in
+\cite{wang2022fast} in conjunction with Generative Adversarial
+Networks (GANs).  More recently, Park et al \cite{park2023self}
+jointly train a primal and dual network by mimicking an Augmented
+Lagrangian algorithm. Predicting Lagrange multipliers allows for
+dynamically adjusting the constraint violation penalty terms in the loss
+function.  Current results suggest that SSL-based proxies can match
+the accuracy of SL-based proxies.
+
+\subsection{Ensuring Feasibility}
+\label{sec:literature:feasibility}
+
+One major limitation of ML-based OPF proxies is that, in general, the
+predicted OPF solution violates physical and engineering constraints
+that govern power flows and ensure safe operations.  To alleviate this
+issue, \cite{Zamzam2020_LearningOPF,zhao2022ensuring} use a
+restricted OPF formulation to generate training data, wherein the OPF
+feasible region is artificially shrunk to ensure that training data
+consists of interior solutions.  In \cite{zhao2022ensuring}, this
+strategy is combined with a verification step (see also
+\cite{Venzke2021_DNNVerificationPowerSystems}) to ensure the trained
+models have sufficient capacity to reach a universal approximation.
+Nevertheless, this requires solving bilevel optimization problems,
+which is very cumbersome: \cite{zhao2022ensuring} reports training
+times in excess of week for a 300-bus system.  In addition, it may not
+be possible to shrink the feasible region in general, e.g., when
+the lower and upper bounds are the same. 
+
+    % Active set methods
+
+In the context of DCOPF,
+\cite{Ng2018_StatisticalLearningDCOPF,Chen2022_Learning4SCED,stratigakos2023interpretable,Ferrando2023_PERFORM_NYU}
+exploit the fact that an optimal solution can be quickly recovered
+from an (optimal) active set of constraints.  A combined
+classification-then-regression architecture is proposed in
+\cite{Chen2022_Learning4SCED}, wherein a classification step
+identifies a subset of variables to be fixed to their lower or upper
+bound, thus reducing the dimension of the regression task.  In
+\cite{Ng2018_StatisticalLearningDCOPF,Ferrando2023_PERFORM_NYU}, the
+authors predict a full active set, and recover a solution by solving a
+system of linear equations.  Similarly,
+\cite{stratigakos2023interpretable} combine decision trees and active
+set-based affine policies.  Importantly, active set-based approaches
+may yield infeasible solutions when active constraints are incorrectly
+classified \cite{Ferrando2023_PERFORM_NYU}.  Furthermore, correctly
+identifying an optimal active set becomes harder as problem size
+increases.
+    
+A number of prior work have investigated physics-informed models
+(e.g.,
+\cite{Zamzam2020_LearningOPF,fioretto2020predicting,chatzos2021spatial,Chen2022_Learning4SCED,pan2022deepopf,nellikkath2022_PINN-ACOPF,Huang2021_DeepOPF-NGT,wang2022fast}).
+This approach augments the training loss function with a term that
+penalizes constraint violations, and is efficient at reducing -- but
+not eliminating -- constraint violations.  To better balance
+feasibility and \cite{fioretto2020predicting,chatzos2021spatial}
+dynamically adjust the penalty coefficient using ideas from Lagrangian
+duality.  In a similar fashion, \cite{park2023self} uses a primal and
+a dual networks: the latter predicts optimal Lagrange multipliers,
+which inform the loss function used to train the former.
+    
+    % Feasibility restoration
+
+Although physics-informed models generally exhibit lower constraint
+violations, they still do not produce feasible solutions.  Therefore,
+several works combine an (inexact) OPF proxy with a repair step that 
+\revision{feasibility restoration step}{restores feasibility}.
+A projection step is used in \cite{pan2020deepopf,fioretto2020predicting}, wherein the (infeasible)
+predicted solution is projected onto the feasible set of OPF.  In
+DCOPF, this projection is a convex (typically linear or quadratic)
+problem, whereas the load flow model used in
+\cite{fioretto2020predicting} for ACOPF is non-convex.  Instead of a
+projection step, \cite{Zamzam2020_LearningOPF} uses an AC power flow
+solver to recover voltage angles and reactive power dispatch from
+predicted voltage magnitudes and generator dispatches.  This is
+typically (much) faster than a load flow.  However, while the
+resulting solution satisfies the power flow equations (assuming the
+solver converges), it may not satisfy all engineering constraints such
+as the thermal limits of the lines.  Finally,
+\cite{Taheri2023_RestoringACOPFFeasibility} uses techniques from state
+estimation to restore feasibility for ACOPF problems.  This approach
+has not been applied in the context of OPF proxies.
+
+The development of implicit differentiable layers
+\cite{Agrawal2019_CVXLayer} makes it possible to embed feasibility
+restoration inside the proxy architecture itself, thereby removing the
+need for post-processing
+\cite{donti2021dc3,kim2022projection,Li2022_LOOP-LC}.  This allows to
+train models in an \emph{end-to-end} fashion, i.e., the predicted
+solution is guaranteed to satisfy constraints.  For instance,
+\cite{kim2022projection} implement the aforementioned projection step
+as an implicit layer.  However, because they require solving an
+optimization problem, these implicit layers incur a very high
+computational cost, both during training and testing.  Equality
+constraints can also be handled implicitly via so-called constraint
+completion \cite{donti2021dc3,Li2022_LOOP-LC}.  Namely, a set of
+independent variables is identified, and dependent variables are
+recovered by solving the corresponding system of equations, thereby
+satisfying equality constraints by design.  Note that constraint
+completion requires the set of independent variables to be the same
+across all instances, which may not hold in general.  For instance,
+changes in generator commitments and/or grid topology may introduce
+dependencies between previously-independent variables. The difference
+between \cite{donti2021dc3} and \cite{Li2022_LOOP-LC} lies in the
+treatment of inequality constraints.  On the one hand,
+\cite{donti2021dc3} replace a costly implicit layer with cheaper
+gradient unrolling, which unfortunately does not guarantee
+feasibility.  On the other hand, \cite{Li2022_LOOP-LC} use gauge
+functions to define a one-to-one mapping between the unit hypercube,
+which is easy to enforce with sigmoid activations, and the set of
+feasible solutions, thereby guaranteeing feasibility.  Nevertheless,
+the latter approach is valid only under restrictive assumptions: all
+constraints are convex, the feasible set is bounded, and a strictly
+feasible point is available for each instance.
+
+
+\subsection{Scalability Challenges}
+\label{sec:literature:scalability}
+
+There exists a significant gap between the scale of actual power
+grids, and those used in most academic studies: the former are
+typically two orders of magnitude larger than the latter.  On the one
+hand, actual power grids comprise thousands to tens of thousands of
+buses \cite{Josz2016_ACOPF_PegaseRTE,Holzer2022_MISO_SFT}.  On the
+other hand, most academic studies only consider small, artificial
+power grids with no more than 300 buses.  Among the aforementioned
+works, \cite{Ferrando2023_PERFORM_NYU} considers a synthetic NYISO
+grid with 1814 buses, and only
+\cite{chatzos2021spatial,Chen2022_Learning4SCED,park2023compact}
+report results on systems with more than 6,000 buses.  This
+discrepancy makes it difficult to extrapolate most existing findings
+to scenarios encountered in the industry.  Indeed, actual power grids
+exhibit complex behaviors not necessarily captured by small-scale
+cases \cite{Josz2016_ACOPF_PegaseRTE}.

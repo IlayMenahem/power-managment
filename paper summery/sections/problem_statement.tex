@@ -1,0 +1,16 @@
+\section*{Problem statement}
+The problem of economic dispatch is to find the optimal $\boldsymbol{p}$, and $\boldsymbol{r}$ such that the total production cost plus a penalty for thermal limit violations is minimized. here is the formal problem statement:
+\begin{align}
+    \min_{\boldsymbol{p}, \boldsymbol{r}, \boldsymbol{\xi}_{th}} c(\boldsymbol{p}) + M_{th} ||\boldsymbol{\xi}_{th}||_1
+\end{align}
+
+subject to
+\begin{enumerate}
+    \item $e^T\boldsymbol{p} = e^T\boldsymbol{d}$ (global power balance)
+    \item $e^T\boldsymbol{r} \geq R$ (minimum reserve requirement)
+    \item $\boldsymbol{p} + \boldsymbol{r} \leq \overline{\boldsymbol{p}}$ (generator output limits)
+    \item $0 \leq \boldsymbol{p} \leq \overline{\boldsymbol{p}}$ (generator output limits)
+    \item $0 \leq \boldsymbol{r} \leq \overline{\boldsymbol{r}}$ (generator reserve limits)
+    \item $\underline{\boldsymbol{f}} - \boldsymbol{\xi}_{th} \leq \boldsymbol{\Phi}(\boldsymbol{p} - \boldsymbol{d}) \leq \overline{\boldsymbol{f}} + \boldsymbol{\xi}_{th}$ (thermal limit violations)
+    \item $\boldsymbol{\xi}_{th} \geq 0$ (thermal limit violations non-negativity)
+\end{enumerate}

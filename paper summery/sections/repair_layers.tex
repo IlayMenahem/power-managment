@@ -1,0 +1,31 @@
+\section*{The repair layers}
+
+To ensure that the neural network output respects the problem constraints, the paper proposes to add a sigmoid, and two repair layers to the end of the network. the sigmoid ensures that the generator output limits are respected, the first layer ensures that the power balance constraint is respected, and the second layer ensures that the reserve requirement is respected. in the paper it is shown that if there is a feasible solution, the repair layers will output a feasible solution.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.85\linewidth]{figs/repair_layers.pdf}
+\end{figure}
+
+The power balance repair layer $\mathcal{P}$ takes as input an initial dispatch vector $\pg \in \hypercube$ and outputs a dispatch vector $\mathbf{\tilde{p}}$ that also satisfies the power balance constraint.
+
+\input{figs/power_balance_repair_layer.tex}
+
+the output is given by:
+
+\begin{align*}
+    \mathcal{P}(\pg) &= \begin{cases}
+        (1 - \eta^{\uparrow}) \pg + \eta^{\uparrow} \pgmax & \text{if } \mathbf{e}^{\top} \pg < \mathbf{e}^{\top} \pd \\
+        (1 - \eta^{\downarrow}) \pg + \eta^{\downarrow} \mathbf{0} & \text{if } \mathbf{e}^{\top} \pg > \mathbf{e}^{\top} \pd
+    \end{cases} \\
+    \eta^{\uparrow} &= \frac{\mathbf{e}^{\top} \pd - \mathbf{e}^{\top} \pg}{\mathbf{e}^{\top} \pgmax - \mathbf{e}^{\top} \pg}, \quad
+    \eta^{\downarrow} = \frac{\mathbf{e}^{\top} \pg - \mathbf{e}^{\top} \pd}{\mathbf{e}^{\top} \pg - \mathbf{e}^{\top} \mathbf{0}}
+\end{align*}
+
+The reserve repair layer $\mathcal{R}$ takes as input an initial dispatch vector $\pg \in \hypersimplex{D}$ and outputs a dispatch vector $\mathbf{\tilde{p}}$ that also satisfies the reserve requirement.
+
+\input{figs/reserve_repair_layer.tex}
+
+the output is given by the following algorithm:
+\input{figs/reserve_repair_layer_algorithm.tex}
+

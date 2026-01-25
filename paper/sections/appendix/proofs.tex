@@ -1,0 +1,74 @@
+\subsection{Proofs}
+\label{app:proofs}
+
+\subsubsection{Proof of Theorem \ref{thm:power_balance_layer}}
+
+    Let $\mathbf{\tilde{p}} \, {=} \, \mathcal{P}(\pg)$, and assume $\mathbf{e}^{\top} \pg \, {<} \, D$.
+    It is immediate that $\etaup \, {\in} \, [0, 1]$, i.e., $\mathbf{\tilde{p}}$ is a convex
+    combination of $\pg$ and $\pgmax$.
+    Thus, $\mathbf{\tilde{p}} \in
+    \hypercube$.  Then,
+        \begin{align*}
+            \mathbf{e}^{\top}\mathbf{\tilde{p}}
+            &= (1 - \etaup) \mathbf{e}^{\top}\pg + \etaup \mathbf{e}^{\top}\bar{\pg}\\
+            &= \etaup(\mathbf{e}^{\top}\bar{\pg} - \mathbf{e}^{\top}\pg) + \mathbf{e}^{\top} \pg\\
+            &= \frac{D - \mathbf{e}^{\top} \pg}{\mathbf{e}^{\top} \mathbf{\bar{p}} - \mathbf{e}^{\top}\pg} (\mathbf{e}^{\top}\bar{\pg} - \mathbf{e}^{\top}\pg) + \mathbf{e}^{\top} \pg\\
+            &= D - \mathbf{e}^{\top}\pg + \mathbf{e}^{\top} \pg = D.
+        \end{align*}
+        Thus, $\mathbf{\tilde{p}}$ satisfies the power balance and $\mathbf{\tilde{p}} \in \hypersimplex{D}$.
+        Similarly, assume $\mathbf{e}^{\top}\pg \geq D$.
+        Then
+        \begin{align*}
+            \mathbf{e}^{\top}\mathbf{\tilde{p}}
+            &= (1 - \etadn) \mathbf{e}^{\top}\pg + \etadn \mathbf{e}^{\top}\mathbf{0}\\
+            &= (1 - \frac{\mathbf{e}^{\top}\pg - D}{\mathbf{e}^{\top} \pg}) \mathbf{e}^{\top}\pg = D,
+        \end{align*}
+        which concludes the proof.
+        \hfill \qed
+
+\subsubsection{Proof of Theorem \ref{thm:reserve_layer:guaranteed_feasibility}}
+
+    Let $\pg$ be the initial prediction, and let $\mathbf{\tilde{p}} = \mathcal{R}(\pg)$.
+    First, the bound constraints $\mathbf{0} \, {\leq} \, \pg \, {\leq} \, \mathbf{\bar{p}}$ are satisfied because $\mathbf{\tilde{p}}$ is a convex combination of $\pg$ and $\pgmax - \resmax$, both of which satisfy bound constraints.
+    
+    Second, we show that $\mathbf{e}^{\top}\pg = D$.
+    Indeed, we have
+    \begin{align}
+        \sum_{g} \tilde{p}_{g} &= \sum_{g \in G^{\uparrow}} \tilde{p}_{g} + \sum_{g \in G^{\downarrow}} \tilde{p}_{g}
+    \end{align}
+    This yields
+    \begin{align*}
+        \sum_{g \in G^{\uparrow}} \tilde{p}_{g} &= \sum_{g \in G^{\uparrow}} (1 - \alpha^{\uparrow}) p_{g} + \alpha^{\uparrow} (\bar{p}_{g} - \bar{r}_{g})\\
+        &= \sum_{g \in G^{\uparrow}} p_{g} + \alpha^{\uparrow} \sum_{g \in G^{\uparrow}} (\bar{p}_{g} - \bar{r}_{g} - p_{g})\\
+        &= \sum_{g \in \uparrow} p_{g} + \alpha^{\uparrow} \Delta^{\uparrow}\\
+        &= \sum_{g \in G^{\uparrow}} p_{g} + \Delta \\
+        \sum_{g \in G^{\downarrow}} \tilde{p}_{g}
+        &= \sum_{g \in G^{\downarrow}} (1 - \alpha^{\downarrow}) p_{g} + \alpha^{\downarrow} (\bar{p}_{g} - \bar{r}_{g})\\
+        &= \sum_{g \in G^{\downarrow}} p_{g} + \alpha^{\downarrow} \sum_{g \in G^{\downarrow}} (\bar{p}_{g} - \bar{r}_{g} - p_{g})\\
+        &= \sum_{g \in G^{\downarrow}} p_{g} - \alpha^{\downarrow} \Delta^{\downarrow}\\
+        &= \sum_{g \in G^{\downarrow}} p_{g} - \Delta
+    \end{align*}
+    Summing the two terms yields $\mathbf{e}^{\top}\pg + \Delta - \Delta = D$.
+        
+    Finally, we show that Algorithm \ref{alg:FFR:reserves} provides a feasible point iff DCOPF is feasible.
+    If $\mathbf{\tilde{p}}$ is reserve feasible, then DCOPF is trivially feasible.
+    
+    Assume $\mathbf{\tilde{p}}$ is infeasible, i.e., $\sum_{g} \min(\bar{r}_{g}, \bar{p} - \tilde{p}_{g}) < R$.
+    Note that if $\Delta = \Delta_{R}$ in Algorithm \ref{alg:FFR:reserves}, then $\mathbf{\tilde{p}}$ is feasible, so we must have $\Delta^{\uparrow} < \Delta_{R}$ or $\Delta^{\downarrow} < \Delta_{R}$.
+    
+    Assume the former holds, i.e., $\Delta^{\uparrow} < \Delta_{R}, \Delta_{\downarrow}$.
+    In other words:
+    \begin{align*}
+        \sum_{g \in G^{\uparrow}} \bar{p}_{g} - \bar{r}_{g} - p_{g} < R - \sum_{g \in G^{\uparrow}} \bar{r}_{g} - \sum_{g \in G^{\downarrow}} \bar{p}_{g} - p_{g}\\
+        \sum_{g \in G^{\uparrow}} (\bar{p}_{g} - \bar{r}_{g} - p_{g} + \bar{r}_{g}) < R - \sum_{g \in G^{\downarrow}} \bar{p}_{g} - p_{g}\\
+        \sum_{g \in G^{\uparrow}} (\bar{p}_{g} - p_{g}) < R - \sum_{g \in G^{\downarrow}} \bar{p}_{g} - p_{g}\\
+        \sum_{g \in G^{\uparrow}} \bar{p}_{g} + \sum_{g \in G^{\downarrow}} \bar{p}_{g} < R - \sum_{g} p_{g}\\
+        \sum_{g} \bar{p}_{g} < R - D
+    \end{align*}
+    Summing constraints \eqref{eq:DCOPF:eco_max} and \eqref{eq:DCOPF:power_balance}, we obtain
+    \begin{align*}
+        \sum_{g} r_{g} \leq (\sum_{g} \bar{p}_{g}) - D < R
+    \end{align*}
+    hence DCOPF is infeasible.
+    The proof for $\Delta^{\downarrow} < \Delta_{R}$ is similar.
+    \hfill \qed

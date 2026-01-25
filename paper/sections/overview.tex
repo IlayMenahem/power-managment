@@ -1,0 +1,53 @@
+\section{Overview of the Proposed Approach}
+\label{sec:overview}
+
+The paper addresses the shortcomings in current literature by
+combining learning and feasibility restoration in a single E2ELR
+architecture.  Figure \ref{fig:pipeline:DCOPF} illustrates the
+proposed architecture (Figure \ref{fig:pipeline:DCOPF:E2ELR}),
+alongside existing architectures from previous works.  In contrast to
+previous works, the proposed E2ELR uses specialized, closed-form
+repair layers that allow the architecture to scale to industry-size
+systems. E2ELR is also trained with self-supervised learning,
+alleviating the need for labeled data and the offline solving of
+numerous optimization problems. As a result, even for the largest
+systems considered, the self-supervised E2ELR is trained from scratch
+in under an hour, and achieves state-of-the-art performance,
+outperforming other baselines by an order of magnitude. Note that
+E2ELR also bridges the gap between academic DCOPF formulations and
+those used in the industry, by including reserve requirements in the
+ED formulation.  To the best of the authors' knowledge, this is the
+first work to explicitly consider --and offer feasibility guarantees
+for-- reserve requirements in the context of optimization proxies.
+Moreover, the repair layers are \revision{}{guaranteed to satisfy power balance and reserve requirements for any combination of min/max generation limits (see Theorems \ref{thm:power_balance_layer} and \ref{thm:reserve_layer:guaranteed_feasibility}).}
+\revision{}{This allows} to accommodate variations in
+operating parameters such as min/max limits and commitment status of
+generators, a key aspect of real-life systems overlooked
+in existing literature.
+
+\begin{figure}
+    \centering
+    \subfloat[The vanilla DNN architecture without feasibility restoration.]{
+        \includegraphics[width=0.95\columnwidth]{images/architectures/DNN_model-crop.pdf}
+        \label{fig:pipeline:DCOPF:DNN}
+    }\\
+    \subfloat[\revision{blue}{The DeepOPF architecture \cite{pan2020deepopf}. The output $\mathbf{\hat{p}}$ may violate inequality constraints.}]{
+        \includegraphics[width=0.95\columnwidth]{images/architectures/deepopf-crop.pdf}
+        \label{fig:pipeline:DCOPF:DeepOPF}
+    }\\
+    \subfloat[The DC3 architecture with unrolled gradient \cite{donti2021dc3}. The output $\mathbf{\tilde{\tilde{p}}}$ may violate inequality constraints.]{
+        \includegraphics[width=0.95\columnwidth]{images/architectures/DC3_model-crop.pdf}
+        \label{fig:pipeline:DCOPF:DC3}
+    }\\
+    \subfloat[{The LOOP-LC architecture \cite{Li2022_LOOP-LC}. The DNN outputs a latent vector $\mathbf{z} \in [0,1]^{n}$,  which is mapped onto a feasible $\mathbf{\hat{p}}$ via a gauge mapping.}]{
+        \includegraphics[width=0.95\columnwidth]{images/architectures/LOOP_model-crop.pdf}
+        \label{fig:pipeline:DCOPF:LOOP}
+    }\\
+    \subfloat[The proposed end-to-end feasible architecture. The output $\mathbf{\hat{p}}$ satisfies all hard constraints.]{
+        \includegraphics[width=0.95\columnwidth]{images/architectures/E2ELR_model-crop.pdf}
+        \label{fig:pipeline:DCOPF:E2ELR}
+    }
+    \caption{Optimization proxy architectures for DCOPF}
+    \label{fig:pipeline:DCOPF}
+\end{figure}
+

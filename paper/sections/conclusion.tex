@@ -1,0 +1,21 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+The paper proposed a new \emph{End-to-End Learning and Repair} (E2ELR)
+architecture for training optimization proxies for economic dispatch
+problems. E2ELR combines deep learning with closed-form, differential
+repair layers, thereby integrating prediction and feasibility
+restoration in an end-to-end fashion. The E2ELR architecture can be
+trained with self-supervised learning, removing the need for
+labeled data and the solving of numerous optimization problems
+offline. The paper conducted extensive numerical experiments on the
+ecocomic dispatch of large-scale, industry-size power grids with tens
+of thousands of buses.  It also presented the first study that
+considers reserve requirements in the context of optimization proxies,
+reducing the gap between academic and industry formulations.
+The results demonstrate that the combination of E2ELR and
+self-supervised learning achieves state-of-the-art performance, with
+optimality gaps that outperform other baselines by at least an order
+of magnitude.  Future research will investigate security-constrained
+economic dispatch (SCED) formulations, and the extension of repair
+layers to \revision{}{thermal constraints, multi-period settings and the nonlinear, non-convex AC-OPF.}

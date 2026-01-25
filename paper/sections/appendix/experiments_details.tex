@@ -1,0 +1,69 @@
+\subsection{Details of the baseline models}
+\label{sec:appendix:baseline}
+
+Both DC3 \cite{donti2021dc3} and LOOP-LC \cite{Li2022_LOOP-LC} follow the steps of neural network prediction, inequality correction, and equality completion.
+First, the decision variables are divided into two groups: $|\mathcal{G}|-N_{eq}$ independent decision variables and $N_{eq}$ dependent decision variables, where $N_{eq}$ indicates the number of equality constraints. 
+In the PTDF formulation of DC-OPF, the only equality constraint is the power balance constraint \eqref{eq:DCOPF:power_balance}, and thus $N_{eq}=1$. 
+Therefore, given the dispatches of the independent generator are predicted, the dispatch of the dependent generator can be recovered by 
+\begin{equation}
+    p_1 = D - \sum_{g\in{\mathcal{G}}\setminus1}p_g. \label{eq:dc3:recover_den_variable}
+\end{equation}
+DC3 and LOOP-LC differ in their inequality corrections.
+
+\paragraph{DC3}
+Given the input load profile $\mathbf{l} \in \mathbb{R}^{|\mathcal{L}|}$, the neural network outputs $\mathbf{z} \in [0, 1]^{|\mathcal{G}|-1}$.
+This is achieved by applying a sigmoid function to the final layer of the network.
+Then the capacity constraints \eqref{eq:DCOPF:eco_max} are enforced by:
+\[p_g = z_g*\bar{p}_g, \;\; \forall g \in \mathcal{G}\setminus 1.\]
+
+In the inequality correction steps, DC3 minimizes the constraint violation by unrolling gradient descent with a fixed number of iterations $T$.
+Denote the constraint violation \[g(\mathbf{p}) = \sum_{g\in \mathcal{G}} \max(p_g - \bar{p}_g, 0) + \max (R - \sum_{g\in \mathcal{G}} r_g, 0),\]
+where $r_g = \min\{\bar{r}_{g}, \bar{p}_{g} - p_{g}\}$ and $p_1 = D - \sum_{g\in{\mathcal{G}}\setminus1}p_g$.
+The dispatch is updated using: 
+\begin{align*}
+    \mathbf{p}^{t} = \mathbf{p}^{t-1} - \rho*\nabla_\mathbf{p}\|g(\mathbf{p}^{t-1})\|^2_2,
+\end{align*}
+where $\mathbf{p}^{0}$ is the output of the neural network. 
+In the experiment, the step size $\rho$ is set as $1e-4$ and the total iteration $T$ is set as $50$ when training and $200$ when testing.
+The longer testing $T$ is suggested in \cite{donti2021dc3} to mitigate the constraint violation of DC3 predictions.
+
+\paragraph{LOOP-LC}
+Similar to DC3, the neural network maps the load profile $\mathbf{l} \in \mathbb{R}^{|\mathcal{L}|}$ to $\mathbf{z} \in [0, 1]^{|\mathcal{G}|-1}$ by applying a sigmoid function at the end.
+In the inequality correction step, LOOP-LC uses gauge function mapping $\mathbf{z}$ in the $l_\infty$ norm ball to the dispatches in the feasible region.
+The gauge mapping needs an interior point to shift the domain.
+The work in \cite{Li2022_LOOP-LC} proposes an interior point finder by solving an optimization, which could be computationally expensive.
+Instead, the experiments exploit the proposed feasibility restoration layers to find the interior point effectively. 
+Specifically, the interior point finder consists of two steps.
+First, the optimal dispatches of the nominal case $\mathbf{p}^{n}$ are obtained by solving the instance with the nominal active power demand as the input, where the upper bounds $\bar{p}_{g}$ in constraints \eqref{eq:DCOPF:eco_max} and \eqref{eq:DCOPF:dispatch_bounds} are scaled with $\beta \in (0,1)$: $\pg + \res \leq \beta \pgmax$ and $\mathbf{0} \leq \pg \leq \beta \pgmax$,
+where the $\beta$ is set as $0.8$ in the experiments.
+The scaling aims at providing a more interior point such that the gauge mapping is more smooth.
+However, the $\mathbf{p}^{n}$ may not be feasible when changing the input load profile $\mathbf{l}$.
+To obtain the feasible solution, the proposed feasibility layers are used to convert $\mathbf{p}^{n}$ to an interior point.
+
+\subsection{Hyperparameter Tuning}
+\label{sec:appendix:hyperparameters}
+
+
+For each test case and method, the number of instances in the training and test minibatch are set to 64 and 256, respectively.
+For all deep learning models, a batch normalization layer \cite{ioffe2015batch} and a dropout layer \cite{srivastava2014dropout} with a dropout rate $0.2$ are appended after each dense layer except the last one.
+The number of layers $l$ is selected from $\{3, 4, 5\}$ and the hidden dimension $hd$ of the dense layers is selected from $\{128, 256\}$.
+
+The penalty coefficients $\lambda$ of the constraint violation in the loss function \ref{eq:SL:loss:final} and \ref{eq:SSL:loss} are selected from $\{1, 0.1\}$ for self-supervised learning and selected from $\{1e-3, 1e-4, 1e-5\}$ for supervised learning. For the models with feasibility guarantees such as DNN-F and LOOP, the $\lambda$ is set as 0 for self-supervised learning. $\mu$ is set to be equal to $\lambda$ for supervised learning.
+For DC3 model, the unrolled iteration is set as $50$ iterations in training and $200$ iterations in testing. The gradient step size is set as $1e-4$, where a larger step size results in numerical issues.
+
+The models are trained with Adam optimizer \cite{kingma2014adam} with an initial learning rate is set as $1e-2$ and weight delay $1e-6$. The learning rate is decayed by 0.1 when the validation loss does not improve for consecutive 10 epochs and the training early stops if the validation loss does not decrease for consecutive 20 epochs. The maximum training time is set as 150 minutes.
+
+   % \begin{table}[!t]
+   %     \centering
+   %     \caption{Hyperparameters of the best models for DCOPF}
+   %     \label{tab:exp:DCOPF:hyperparameters}
+   %     \resizebox{\columnwidth}{!}{\input{tables/hyperparameters_DCOPF}}
+   % \end{table}
+
+   % \begin{table}[!t]
+   %     \centering
+   %     \caption{Hyperparameters of the best models for DCOPF-R}
+   %     \label{tab:exp:DCOPF-R:hyperparameters}
+   %     \resizebox{\columnwidth}{!}{\input{tables/hyperparameters_DCOPF-R}}
+   % \end{table}
+

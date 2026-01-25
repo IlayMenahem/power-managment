@@ -1,0 +1,197 @@
+\section{Experiment settings}
+\label{sec:experiments}
+
+\newcommand{\ieeeSmall}{\texttt{ieee300}}
+\newcommand{\pegaseSmall}{\texttt{pegase1k}}
+\newcommand{\rteLarge}{\texttt{rte6470}}
+\newcommand{\pegaseLarge}{\texttt{pegase9k}}
+\newcommand{\pegaseXLarge}{\texttt{pegase13k}}
+\newcommand{\gocXXL}{\texttt{goc30k}}
+
+This section presents the numerical experiments used to assess
+E2ELR. The experiments are conducted on power grids with up to 30,000
+buses and uses two variants of Problem \ref{eq:DCOPF} with and without
+reserve requirements.  The section presents the data-generation
+methodology, the baseline ML architectures, performance metrics, and
+implementation details.  Additional information is in \cite{Chen2023_E2ELR_arxiv}.
+
+
+\subsection{Data Generation}
+\label{sec:experiment:data}
+
+    \begin{table}[!t]
+        \centering
+        \caption{Selected test cases from PGLib \cite{PGLib}}
+        \label{tab:PGLib}
+        \begin{tabular}{lcrrrrr}
+            \toprule
+            System & \revision{}{Ref}
+                & \multicolumn{1}{c}{$|\mathcal{N}|$}
+                & \multicolumn{1}{c}{$|\mathcal{E}|$}
+                & \multicolumn{1}{c}{$|\mathcal{G}|$} 
+                & \multicolumn{1}{c}{${D_{\text{ref}}}^{\dagger}$}
+                & \multicolumn{1}{c}{$\alpha_{\text{r}}$}
+                \\
+            \midrule
+            \ieeeSmall      & \cite{UW_PowerSystemArchive} & 300   &	411 &	69  & 23.53    & 34.16\% \\
+            \pegaseSmall    & \cite{Josz2016_ACOPF_PegaseRTE} & 1354  & 1991  & 260   & 73.06    & 19.82\% \\
+            \rteLarge       & \cite{Josz2016_ACOPF_PegaseRTE} & 6470  & 9005  & 761   & 96.59    & 14.25\% \\
+            \pegaseLarge    & \cite{Josz2016_ACOPF_PegaseRTE} & 9241  & 16049 & 1445  & 312.35   &  4.70\% \\
+            \pegaseXLarge   & \cite{Josz2016_ACOPF_PegaseRTE} & 13659 & 20467 & 4092  & 381.43   &  1.32\% \\
+            \gocXXL         & \cite{GoCompetition} & 30000 & 35393 & 3526  & 117.74   &  4.68\% \\
+            \bottomrule
+        \end{tabular}\\
+        \footnotesize{$^{\dagger}$Total active power demand in reference PGLib case, in GW.}
+    \end{table}
+    
+Instances of Problem \eqref{eq:DCOPF} are obtained by perturbing
+reference test cases from the PGLib \cite{PGLib} library \revision{}{(v21.07)}.  Two
+categories of instances are generated: instances without any reserve
+requirements (ED), and instances with reserve requirements (ED-R).
+The instances are generated as follows. Denote by $\pd^{\text{ref}}$
+the nodal load vector from the reference PGLib case.  ED instances
+are obtained by perturbing this reference load profile.
+Namely, for instance $i$, $\pd^{(i)} \, {=} \, \gamma^{(i)} \times \eta^{(i)} \times \pd^{\text{ref}}$,
+where $\gamma^{(i)} \, {\in} \, \mathbb{R}$ is a global scaling
+factor, $\eta \, {\in} \, \mathbb{R}^{|\mathcal{N}|}$ denotes
+load-level multiplicative white noise, and the multiplications are
+element-wise.  For the case at hand, $\gamma$ is sampled from a
+uniform distribution $U[0.8, 1.2]$,
+% i.e., the total demand varies by $\pm$20\% 
+and, for each load, $\eta$ is sampled from a log-normal
+distribution with mean $1$ and standard deviation $5\%$.
+
+ED-R instances are identical to the ED instances, except that
+reserve requirements are set to a non-zero value.  The PGLib library
+does not include reserve information, therefore, the paper assumes
+$\bar{r}_{g} = \alpha_{\text{r}} \bar{p}_{g}, \forall g \in
+\mathcal{G}$, where
+%    \begin{align}
+% \bar{r}_{g} = \alpha_{\text{t}} \bar{p}_{g}
+$
+        \alpha_{\text{r}} = 5 \times \| \bar{\pg} \|_{\infty} \times \| \bar{\pg} \|_{1}^{-1}.
+        %    \end{align}
+$        
+This ensures that the total reserve capacity is 5 times larger than
+the largest generator in the system.  Then, the reserve requirements
+of each instance is sampled uniformly between 100\% and 200\% of the
+size of the largest generator, thereby mimicking contingency reserve
+requirements used in industry.
+
+Table \ref{tab:PGLib} presents the systems used in the experiments.
+The table reports: the number of buses ($|\mathcal{N}|$), the number
+of branches ($|\mathcal{E}|$), the number of generators
+($|\mathcal{G}|$), the total active power demand in the reference
+PGLib case ($D_{\text{ref}}$, in GW), and the value of
+$\alpha_{\text{r}}$ used to determine reserve capacities.  The
+experiments consider test cases with up to 30,000 buses, significantly
+larger than almost all previous works.  Large systems have a smaller
+value of $\alpha_{\text{r}}$ because they contain significantly more
+generators, whereas the size of the largest generator typically
+remains in the same order of magnitude.  For every test case, $50,000$
+instances are generated and solved using Gurobi.  This dataset is then
+split into training, validation, and test sets which comprise $40000$,
+$5000$, and $5000$ instances.
+
+\subsection{Baseline Models}
+\label{sec:experiment:baselines}
+
+The proposed end-to-end learning and repair model (E2ELR) is evaluated
+against \revision{three}{four} architectures.  First, a naive, fully-connected DNN
+model without any feasibility layer (DNN).  This model only includes a
+sigmoid activation layer to enforce generation bounds (constraint
+\eqref{eq:DCOPF:dispatch_bounds}). 
+\revision{blue}{Second, a fully-connected DNN model with the DeepOPF architecture \cite{pan2020deepopf} (DeepOPF).
+It uses an equality completion to ensure the satisfaction of equality constraints; the output may violate inequality constraints.}
+\revision{Second}{Third}, a fully-connected DNN
+model with the DC3 architecture \cite{donti2021dc3} (DC3).  This
+architecture uses a fixed-step unrolled gradient descent to minimize
+constraint violations; it is however not guaranteed to reach zero
+violations.  Note that the DC3 architecture requires a significant
+amount of hypertuning to achieve decent results.  
+\revision{Third,}{The last model is} a
+fully-connected DNN model, combined with the LOOP-LC architecture from
+\cite{Li2022_LOOP-LC} (LOOP).  The gauge mapping used in LOOP does not
+support the compact form of Eq. \eqref{eq:reserves:sufficient}, therefore it is not included in the ED-R experiments.  These baseline
+models are detailed in \cite{Chen2023_E2ELR_arxiv}.
+
+\revision{}{All baselines use a fully-connected DNN architecture, with the main difference being how feasibility is handled.
+Graph Neural Network (GNN) architectures are not considered in this work, as they were found to be numerically less stable and exhibited poorer performance than DNNs in preliminary experiments.
+Nevertheless, note that the proposed repair layers can also be used in conjunction with a GNN architecture.}
+
+
+\subsection{Performance Metrics}
+\label{sec:experiment:metrics}
+
+The performance of each ML model is evaluated with respect to several
+metrics that measure both accuracy and computational efficiency.
+Given an instance $\x$ with optimal solution $\pg^{*}$ and a predicted
+solution $\hat{\pg}$, the optimality gap is defined as
+$
+        \text{gap} = (\hat{Z} - Z^{*}) \times | Z^{*} |^{-1},
+$
+    where $Z^{*}$ is the optimal value of the problem, and $\hat{Z}$ is the objective value of the prediction, plus a penalty for hard constraint violations, i.e., 
+    \begin{align}
+        \label{eq:experiment:objective_penalized}
+        c(\hat{\pg}) + \Mth \| \xith(\hat{\pg}) \|_{1} + \Mpb |\mathbf{e}^{\top}(\hat{\pg} - \pd)| + \Mres \xir(\hat{\pg}),
+    \end{align}
+where $\xir(\hat{\pg})$ is defined as in function
+\eqref{eq:SL:reserve_shortage}.  Penalizing hard constraint violations
+is necessary to ensure a fair comparison between models that output
+feasible solutions and those that do not.  Because all considered
+models enforce constraints
+\eqref{eq:DCOPF:eco_max}--\eqref{eq:DCOPF:reserve_bounds}, they are
+not penalized in Eq. \eqref{eq:experiment:objective_penalized}.
+
+The paper uses realistic penalty prices, based on the values used by
+MISO in their operations
+\cite{MISO_Schedule28_ReserveDemandCurve,MISO_Schedule28A_TranmissionDemandCurve}.
+Namely, the thermal violation penalty price $\Mth$ is set to
+\$1500/MW.  The power balance violation penalty $\Mpb$ is set to
+\$3500/MW, which corresponds to MISO's value of lost load (VOLL).
+Finally, the reserve shortage penalty $\Mres$ is set to \$1100/MW,
+which is MISO's reserve shortage price. The ability of optimization
+proxies to output feasible solution is measured via the proportion of
+feasible predictions, which is reported as a percentage over the test
+set.  The paper uses an absolute tolerance of $10^{-4}$ p.u. to decide
+whether a constraint is violated; note that this is 100x larger than
+the default absolute tolerance of optimization solvers.  The paper
+also reports the mean constraint violation of infeasible predictions.
+
+The paper also evaluates the computational efficiency of each ML
+model and learning paradigm (SL and SSL), as well as that of the
+repair layers.  Computational efficiency is measured by (i) the
+training time of ML models, including the data-generation time when
+applicable, and (ii) the inference time.  Note that ML models evaluate
+\emph{batches} of instances, therefore, inference times are reported
+per batch of 256 instances.  The performance of the repair layers
+presented in Section \ref{sec:layers} is benchmarked against a
+standard euclidean projection solved with state-of-the-art
+optimization software.
+
+Unless specified otherwise, average computing times are arithmetic
+means; other averages are shifted geometric means
+\begin{align*}
+    \mu_{s}(x_{1}, ..., x_{n}) = \exp \Big( \frac{1}{n} \sum_{i} \log (x_{i} + s) \Big) - s.
+\end{align*}
+The paper uses a shift $s$ of 1\% for optimality gaps, and 1p.u. for
+constraint violations.
+
+\subsection{Implementation Details}
+\label{sec:experiment:implementation}
+
+All optimization problems are formulated in Julia using JuMP
+\cite{Dunning2017_JuMP}, and solved with Gurobi 9.5 \cite{gurobi} with
+a single CPU thread and default parameter settings.  All deep learning
+models are implemented using PyTorch \cite{paszke2017automatic} and
+trained using the Adam optimizer \cite{kingma2014adam}.  All models
+are hyperparameter tuned using a grid search, which is detailed in
+\cite{Chen2023_E2ELR_arxiv}.  For each system, the
+best model is selected on the validation set and the performances on
+the test set are reported.
+\revision{}{During training, the learning rate is reduced by a factor of ten if the validation loss shows no improvement for a consecutive sequence of 10 epochs.
+In addition, training is stopped if the validation loss does not improve for consecutive 20 epochs.}
+Experiments are conducted on dual Intel
+Xeon 6226@2.7GHz machines running Linux, on the PACE Phoenix cluster
+\cite{PACE}.  The training of ML models is performed on Tesla
+V100-PCIE GPUs with 16GBs HBM2 RAM.

@@ -1,0 +1,19 @@
+# latex files
+*.aux
+*.bbl
+*.blg
+*.bib
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.toc
+*.lot
+*.lof
+*.lol
+*.vrb
+*.nav
+*.snm
+
+.DS_Store

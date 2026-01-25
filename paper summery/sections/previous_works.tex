@@ -1,0 +1,23 @@
+\section*{Previous works}
+\subsection*{Optimization Proxies for Optimal Power Flow (OPF)}
+The majority of existing research that employs Supervised Learning to approximate OPF solutions. While applied successfully to both DC-OPF and AC-OPF, SL models rely on fixed grid topologies and generator commitments. Real-world changes to these parameters require computationally expensive retraining and data re-generation. 
+Graph Neural Networks (GNNs) have been proposed to handle topology changes, but they have mostly been tested on small networks. 
+Recently, Self-Supervised Learning has emerged as a promising alternative to Supervised learning. By training the model to minimize the objective function and constraint penalties directly, Self-Supervised Learning eliminates the need for labeled data and offline optimization solving.
+
+\subsection*{Ensuring Feasibility}
+A critical limitation of ML proxies is that predictions often violate physical constraints. Literature has explored several strategies:
+
+\begin{itemize}
+    \item \textbf{Restricted Training}: Artificially shrinking the feasible region to force solutions "inside" the bounds, which is computationally cumbersome.
+
+    \item \textbf{Active Set Learning}: Predicting which constraints are active to recover a solution, though incorrect classifications lead to infeasibility.
+
+    \item \textbf{Physics-Informed Models}: Adding penalty terms to the loss function. While this reduces violations, it does not guarantee a feasible output.
+
+    \item \textbf{Post-Processing}: Using projection steps or power flow solvers to repair solutions after prediction. This adds significant computational time.
+
+    \item \textbf{End-to-End Layers}: Recent methods embed feasibility restoration into the neural network itself. However, current implementations either fail to guarantee full feasibility or rely on restrictive assumptions (e.g., convexity) that do not hold for general problems.
+\end{itemize}
+
+\subsection*{Scalability Challenges}
+There is a significant disconnect between academic studies and industrial reality. Most research utilizes small test systems with fewer than 300 buses. In contrast, real-world power grids contain tens of thousands of buses. Very few existing studies report results on systems larger than 6,000 buses , making it difficult to extrapolate current findings to industry-scale operations.

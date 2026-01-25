@@ -1,0 +1,42 @@
+\section*{Notation}
+\begin{multicols}{2}
+
+\subsection*{Sets and Indices}
+\begin{itemize}
+    \item[$i \in \mathcal{N}$] buses
+    \item[$e \in \mathcal{E}$] branches
+    \item[$g \in \mathcal{G}$] generators
+\end{itemize}
+
+\subsection*{Variables}
+\begin{itemize}
+    \item[$p_{g}$] Energy dispatch of generator $g$
+    \item[$r_{g}$] Reserve dispatch of generator $g$
+    \item[$\xi_{e}$] Thermal limit violation on branch $e$
+\end{itemize}
+
+\subsection*{Domains}
+\[\hypercube = \left\{ 
+    \pg \in \mathbb{R}^{|\mathcal{G}|}
+    \ \middle| \ 
+    0 \leq \pg \leq \overline{\boldsymbol{p}}
+    \right\}\]
+\[\hypersimplex{D} = \left\{
+        \pg \in \mathbb{R}^{|\mathcal{G}|}
+    \ \middle| \  
+        \mathbf{e}^{\top} \pg = D
+    \right\} \cap \hypercube
+\]
+\subsection*{Parameters}
+\begin{itemize}
+    \item[$d_{i}$] Active power demand at bus $i$
+    \item[$c_{g}$] Production cost function of generator $g$
+    \item[$\underline{f}_{e}, \overline{f}_{e}$] Lower and upper thermal limits on branch $e$
+    \item[$M_{th}$] Thermal violation penalty cost
+    \item[$\overline{p}_{g}$] Maximum output of generator $g$
+    \item[$\overline{r}_{g}$] Maximum reserve of generator $g$
+    \item[$R$] Minimum reserve requirement
+    \item[$\Phi$] Power Transfer Distribution Factor matrix
+\end{itemize}
+
+\end{multicols}

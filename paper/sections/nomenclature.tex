@@ -1,0 +1,41 @@
+\section*{Nomenclature}
+
+\newlist{abbrv}{itemize}{1}
+\setlist[abbrv,1]{label=,labelwidth=0.5in,align=parleft,itemsep=0.1\baselineskip,leftmargin=!}
+
+\subsection{Sets and indices}
+
+\begin{abbrv}
+    \item[$i \in \mathcal{N}$] buses
+    \item[$e \in \mathcal{E}$] branches
+    \item[$g \in \mathcal{G}$] generators
+\end{abbrv}
+
+\subsection{Variables}
+
+\renewcommand{\pg}{\mathbf{p}}
+\newcommand{\pgbar}{\mathbf{\bar{p}}}
+
+\begin{abbrv}
+    \item[$p_{g}$] Energy dispatch of generator $g$
+    \item[$r_{g}$] Reserve dispatch of generator $g$
+    \item[$\xi_{e}$] Thermal limit violation on branch $e$
+\end{abbrv}
+
+\subsection{Parameters}
+
+\newcommand{\PTDF}{\Phi}
+
+\begin{abbrv}
+    \item[$d_{i}$] Active power demand at bus $i$
+    \item[$c_{g}$] Production cost function of generator $g$
+    \item[$\ubar{f}_{e}, \bar{f}_{e}$] Lower and upper thermal limits on branch $e$
+    % \item[$L$] Total energy demand
+    \item[$\Mth$] Thermal violation penalty cost
+    \item[$\bar{p}_{g}$] Maximum output of generator $g$
+    \item[$\bar{r}_{g}$] Maximum reserve of generator $g$
+    \item[$R$] Minimum reserve requirement
+    \item[$\PTDF$] PTDF matrix
+    \item[$\mathbf{0}$] Vector of all zeros
+    \item[$\mathbf{e}$] Vector of all ones
+\end{abbrv}

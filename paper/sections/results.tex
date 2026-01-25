@@ -1,0 +1,240 @@
+\section{Numerical Results}
+\label{sec:results}
+
+\subsection{Optimality Gaps}
+\label{sec:results:gaps}
+
+Table \ref{tab:res:opt_gap} reports, for the ED and ED-R problems, the
+mean optimality gap of each ML model, under the SL and SSL learning
+modes. Bold entries denote the best-performing method. Recall that
+LOOP is not included in ED-R experiments. {\em E2ELR systematically
+  outperforms all other baselines across all settings.}  This stems
+from two reasons. First, DNN, \revision{}{DeepOPF} and DC3 exhibit violations of the power
+balance constraint \eqref{eq:DCOPF:power_balance}, which yields high
+penalties and therefore large optimality gaps.  Statistics on power
+balance violations for DNN, \revision{}{DeepOPF} and DC3 are reported in Table
+\ref{tab:res:violation}. Second, LOOP's poor performance, despite
+not violating any hard constraint, is because the non-convex gauge mapping
+used inside the model has an adverse impact on training.
+Indeed, after a few epochs of training, LOOP gets stuck
+in a local optimum.
+
+    \begin{table}[!t]
+        \centering
+        \caption{Mean optimality Gap (\%) on test set}
+        \label{tab:res:opt_gap}
+        \resizebox{\columnwidth}{!}{
+        \input{tables/gaps_all.tex}
+        }\\
+    \end{table}
+
+        \begin{table}[!t]
+        \centering
+        \caption{Power balance constraint violation statistics}
+        \label{tab:res:violation}
+        \resizebox{\columnwidth}{!}{%
+            \input{tables/viol_powerBalance_all}
+        }
+        \footnotesize{$^{\dagger}$with 200 gradient steps. $^{*}$geometric mean of non-zero violations, in p.u.}
+        \end{table}
+        
+
+{\em E2ELR, when trained in a self-supervised mode, achieves the best
+  performance.}  This is because SSL directly minimizes the true
+objective function, rather than the surrogate supervised loss.  With
+the exception of \rteLarge, the performance of E2ELR improves as the
+size of the system increases, with the lowest optimality gaps achieved
+on \pegaseXLarge, which has the most generators.  Note that \rteLarge
+is a real system from the French transmission grid: it is more
+congested than other test cases, and therefore harder to learn.
+
+
+\subsection{Computing Times}
+\label{sec:results:times}
+
+Tables \ref{tab:exp:ED:train_time} and \ref{tab:exp:ED-R:train_time}
+report the sampling and training times for ED and ED-R, respectively.
+Each table reports the total time for data-generation, which
+corresponds to the total solving time of Gurobi on a single thread.
+There is no labeling time for self-supervised models.  While training
+times for SL and SSL are comparable, for a given architecture, the
+latter does not incur any labeling time.  The training time of DC3 is
+significantly higher than other baselines because of its unrolled
+gradient steps.  These results demonstrate that ML models can be
+trained efficiently on large-scale systems.  Indeed, {\em the
+  self-supervised E2ELR needs less than an hour of total computing
+  time to achieve optimality gaps under $0.5\%$ for systems with
+  thousands of buses.}
+
+    \begin{table}[!t]
+        \centering
+        \caption{Sampling and training time comparison (ED)}
+        \label{tab:exp:ED:train_time}
+        \resizebox{\columnwidth}{!}{
+        \begin{tabular}{llrrrrrrrrrrr}
+            \toprule
+            Loss & System & \multicolumn{1}{c}{Sample} & \multicolumn{1}{c}{DNN} & \multicolumn{1}{c}{E2ELR} & \multicolumn{1}{c}{\revision{}{DeepOPF}} &\multicolumn{1}{c}{DC3} & \multicolumn{1}{c}{LOOP}  \\
+            \midrule
+            SL
+            & \ieeeSmall       & \qty[mode=text]{ 0.2}{\hour} & \qty[mode=text]{ 7}{\minute}  & \qty[mode=text]{37}{\minute} & \revision{}{\qty[mode=text]{31}{\minute}} & \qty[mode=text]{121}{\minute} & \qty[mode=text]{ 33}{\minute} \\\
+            & \pegaseSmall     & \qty[mode=text]{ 0.7}{\hour} & \qty[mode=text]{ 8}{\minute}  & \qty[mode=text]{14}{\minute} & \revision{}{\qty[mode=text]{ 6}{\minute}} & \qty[mode=text]{ 41}{\minute} & \qty[mode=text]{ 19}{\minute} \\\
+            & \rteLarge        & \qty[mode=text]{ 5.1}{\hour} & \qty[mode=text]{11}{\minute}  & \qty[mode=text]{30}{\minute} & \revision{}{\qty[mode=text]{13}{\minute}} & \qty[mode=text]{ 73}{\minute} & \qty[mode=text]{ 18}{\minute}\\
+            & \pegaseLarge     & \qty[mode=text]{12.7}{\hour} & \qty[mode=text]{15}{\minute}  & \qty[mode=text]{24}{\minute} & \revision{}{\qty[mode=text]{22}{\minute}} & \qty[mode=text]{123}{\minute} & \qty[mode=text]{ 25}{\minute}\\
+            & \pegaseXLarge    & \qty[mode=text]{20.6}{\hour} & \qty[mode=text]{14}{\minute}  & \qty[mode=text]{19}{\minute} & \revision{}{\qty[mode=text]{14}{\minute}} & \qty[mode=text]{126}{\minute} & \qty[mode=text]{ 19}{\minute}\\
+            & \gocXXL          & \qty[mode=text]{63.4}{\hour} & \qty[mode=text]{25}{\minute}  & \qty[mode=text]{20}{\minute} & \revision{}{\qty[mode=text]{41}{\minute}} & \qty[mode=text]{108}{\minute} & \qty[mode=text]{127}{\minute}\\
+            \midrule
+            SSL
+            & \ieeeSmall       & -- &  \qty[mode=text]{15}{\minute} & \qty[mode=text]{27}{\minute} & \revision{}{\qty[mode=text]{38}{\minute}} & \qty[mode=text]{102}{\minute} & \qty[mode=text]{27}{\minute} \\
+            & \pegaseSmall     & -- &  \qty[mode=text]{ 8}{\minute} & \qty[mode=text]{15}{\minute} & \revision{}{\qty[mode=text]{11}{\minute}} & \qty[mode=text]{ 46}{\minute} & \qty[mode=text]{14}{\minute} \\
+            & \rteLarge        & -- &  \qty[mode=text]{ 9}{\minute} & \qty[mode=text]{17}{\minute} & \revision{}{\qty[mode=text]{10}{\minute}} & \qty[mode=text]{ 42}{\minute} & \qty[mode=text]{15}{\minute} \\
+            & \pegaseLarge     & -- &  \qty[mode=text]{18}{\minute} & \qty[mode=text]{20}{\minute} & \revision{}{\qty[mode=text]{17}{\minute}} & \qty[mode=text]{100}{\minute} & \qty[mode=text]{29}{\minute} \\
+            & \pegaseXLarge    & -- &  \qty[mode=text]{17}{\minute} & \qty[mode=text]{18}{\minute} & \revision{}{\qty[mode=text]{14}{\minute}} & \qty[mode=text]{125}{\minute} & \qty[mode=text]{15}{\minute} \\
+            & \gocXXL          & -- &  \qty[mode=text]{38}{\minute} & \qty[mode=text]{45}{\minute} & \revision{}{\qty[mode=text]{51}{\minute}} & \qty[mode=text]{105}{\minute} & \qty[mode=text]{60}{\minute} \\
+            \bottomrule
+        \end{tabular}
+        }
+        \footnotesize{Sampling (training) times are for 1 CPU (1 GPU). Excludes hypertuning.}
+    \end{table}
+
+    \begin{table}[!t]
+        \centering
+        \caption{Sampling and training time comparison (ED-R)}
+        \label{tab:exp:ED-R:train_time}
+        \resizebox{\columnwidth}{!}{
+        \begin{tabular}{llrrrrr}
+            \toprule
+            Loss & System & \multicolumn{1}{c}{Sample} & \multicolumn{1}{c}{DNN} & \multicolumn{1}{c}{E2ELR} & \multicolumn{1}{c}{\revision{}{DeepOPF}} & \multicolumn{1}{c}{DC3} \\
+            \midrule
+            SL
+            & \ieeeSmall       & \qty[mode=text]{ 0.2}{\hour} & \qty[mode=text]{12}{\minute}  & \qty[mode=text]{43}{\minute} & \revision{}{\qty[mode=text]{43}{\minute}} & \qty[mode=text]{115}{\minute} \\
+            & \pegaseSmall     & \qty[mode=text]{ 0.8}{\hour} & \qty[mode=text]{14}{\minute}  & \qty[mode=text]{19}{\minute} & \revision{}{\qty[mode=text]{19}{\minute}} & \qty[mode=text]{53 }{\minute} \\
+            & \rteLarge        & \qty[mode=text]{ 4.6}{\hour} & \qty[mode=text]{14}{\minute}  & \qty[mode=text]{19}{\minute} & \revision{}{\qty[mode=text]{19}{\minute}} & \qty[mode=text]{71 }{\minute} \\
+            & \pegaseLarge     & \qty[mode=text]{14.0}{\hour} & \qty[mode=text]{15}{\minute}  & \qty[mode=text]{22}{\minute} & \revision{}{\qty[mode=text]{22}{\minute}} & \qty[mode=text]{123}{\minute} \\
+            & \pegaseXLarge    & \qty[mode=text]{22.7}{\hour} & \qty[mode=text]{16}{\minute}  & \qty[mode=text]{27}{\minute} & \revision{}{\qty[mode=text]{27}{\minute}} & \qty[mode=text]{126}{\minute} \\
+            & \gocXXL          & \qty[mode=text]{65.9}{\hour} & \qty[mode=text]{32}{\minute}  & \qty[mode=text]{39}{\minute} & \revision{}{\qty[mode=text]{38}{\minute}} & \qty[mode=text]{129}{\minute} \\
+            \midrule
+            SSL
+            & \ieeeSmall       & -- & \qty[mode=text]{21}{\minute}  & \qty[mode=text]{37}{\minute} & \revision{}{\qty[mode=text]{37}{\minute}} & \qty[mode=text]{131}{\minute} \\
+            & \pegaseSmall     & -- & \qty[mode=text]{ 6}{\minute}  & \qty[mode=text]{19}{\minute} & \revision{}{\qty[mode=text]{19}{\minute}} & \qty[mode=text]{ 67}{\minute} \\
+            & \rteLarge        & -- & \qty[mode=text]{12}{\minute}  & \qty[mode=text]{21}{\minute} & \revision{}{\qty[mode=text]{21}{\minute}} & \qty[mode=text]{ 71}{\minute} \\
+            & \pegaseLarge     & -- & \qty[mode=text]{20}{\minute}  & \qty[mode=text]{24}{\minute} & \revision{}{\qty[mode=text]{24}{\minute}} & \qty[mode=text]{123}{\minute} \\
+            & \pegaseXLarge    & -- & \qty[mode=text]{13}{\minute}  & \qty[mode=text]{22}{\minute} & \revision{}{\qty[mode=text]{22}{\minute}} & \qty[mode=text]{125}{\minute} \\
+            & \gocXXL          & -- & \qty[mode=text]{52}{\minute}  & \qty[mode=text]{53}{\minute} & \revision{}{\qty[mode=text]{53}{\minute}} & \qty[mode=text]{128}{\minute} \\
+            \bottomrule
+        \end{tabular}
+        }\\
+        \footnotesize{Sampling (training) times are for 1 CPU (1 GPU). Excludes hypertuning.}
+    \end{table}
+
+Tables \ref{tab:exp:ED:inference_time} and
+\ref{tab:exp:ED-R:inference_time} report, for ED and ED-R,
+respectively, the average solving time using Gurobi (GRB) and average
+inference times of ML methods.  Recall that the Gurobi's solving times
+are for a single instance solved on a single CPU core, whereas the ML
+inference times are reported for a batch of 256 instances on a GPU.
+Also note that the number of gradient steps used by DC3 to recover
+feasibility is set to 200 for inference (compared to 50 for training).
+
+On systems with more than 6,000 buses, DC3 is typically 10--30 times
+slower than other baselines, again due to its unrolled gradient steps.
+\revision{blue}{In contrast, DNN, DeepOPF, E2ELR, and LOOP all require in the
+order of 5--10 milliseconds to evaluate a batch of 256 instances.}  For
+the largest systems, this represents about 25,000 instances per second,
+on a single GPU.  Solving the same volume of instances with Gurobi would require more than
+a day on a single CPU.
+Getting this time down to the order of seconds, thereby matching the speed of ML proxies, would require thousands of
+CPUs, which comes at high financial and environmental costs.
+
+    \begin{table}[!t]
+        \centering
+        \caption{Solving and inference time comparison (ED)}
+        \label{tab:exp:ED:inference_time}
+        \resizebox{\columnwidth}{!}{
+            \input{tables/time_inference_DCOPF}
+        }\\
+        \footnotesize{$^{\dagger}$with 200 gradient steps. $^{*}$solution time per instance (single thread).\\All ML inference times are for a batch of 256 instances.}
+    \end{table}
+
+    \begin{table}[!t]
+        \centering
+        \caption{Solving and inference time comparison (ED-R)}
+        \label{tab:exp:ED-R:inference_time}
+        \resizebox{\columnwidth}{!}{%
+            \input{tables/time_inference_DCOPF-R}
+        }
+        \footnotesize{$^{\dagger}$with 200 gradient steps. $^{*}$solution time per instance (single thread).\\All ML inference times are for a batch of 256 instances.}
+    \end{table}
+
+
+\subsection{Benefits of End-to-End Training}
+\label{sec:results:benefits_e2e}
+
+    \begin{table}[!t]
+        \centering
+        \caption{Comparison of optimality gaps (\%) with and without feasibility restoration (ED)}
+        \label{tab:exp:ED:opt_gap:FFR}
+        \resizebox{\columnwidth}{!}{\input{tables/gaps_DCOPF_FFR}}
+        % \footnotesize{All values are shifted geometric means with a shift of 1\%.}
+    \end{table}
+
+    \begin{table}[!t]
+        \centering
+        \caption{Comparison of optimality gaps (\%) with and without feasibility restoration (ED-R)}
+        \label{tab:exp:ED-R:opt_gap:FFR}
+        \resizebox{\columnwidth}{!}{\input{tables/gaps_DCOPF-R_FFR}}
+        % \footnotesize{All values are shifted geometric means with a shift of 1\%.}
+    \end{table}
+
+Tables \ref{tab:exp:ED:opt_gap:FFR} and \ref{tab:exp:ED-R:opt_gap:FFR}
+further demonstrate the benefits of training end-to-end feasible
+models: they report, for ED and ED-R problems, the optimality gaps
+achieved by DNN, \revision{}{DeepOPF} and DC3 \emph{after applying a repair step at
+  inference time}. Two repair mechanisms are compared: the proposed
+Repair Layers (RL) and a Euclidean Projection (EP).  The tables also
+report the mean gap achieved by E2ELR as a reference baseline.  The
+results can be summarized as follows. First, the additional
+feasibility restoration improves the quality of the initial
+prediction.  This is especially true for DNN \revision{}{and DeepOPF}, which exhibited the
+largest constraint violations (see Table \ref{tab:res:violation}):
+optimality gaps are improved by a factor 2--20, but remain very high
+nonetheless.  Second, the two repair mechanisms yield similar
+optimality gaps.  For DC3, there is virtually no difference between RL
+and EP.  Third, across all experiments, even after feasibility
+restoration, E2ELR remains the best-performing model, with optimality
+gaps 2--6x smaller than DC3. Table \ref{tab:exp:feasrec_time} compares
+the computing times of the feasibility restoration using either the
+repair layers (RL) or the euclidean projection (EP).  The latter is
+solved as a quadratic program with Gurobi.  All benchmarks are
+conducted in Julia on a single thread, using the
+\texttt{BenchmarkTools} utility \cite{BenchmarkTools.jl-2016}, and
+median times are reported.  The results of Table
+\ref{tab:exp:feasrec_time} show that evaluating the proposed repair
+layers is three orders of magnitude faster than solving the euclidean
+projection problem.
+
+    \begin{table}[!t]
+        \centering
+        \caption{Computing time of feasibility restoration using feasibility layers (FL) and Euclidean projection (EP).}
+        \label{tab:exp:feasrec_time}
+        \begin{tabular}{llrrr}
+            \toprule
+            Problem  & System           & \multicolumn{1}{c}{RL} & \multicolumn{1}{c}{EP} & Speedup \\
+            \midrule
+            ED    & \ieeeSmall       & \qty[mode=text]{  0.13}{ \us} & \qty[mode=text]{  0.45}{ \ms} & 3439x\\
+                     & \pegaseSmall     & \qty[mode=text]{  0.55}{ \us} & \qty[mode=text]{  1.41}{ \ms} & 2572x\\
+                     & \rteLarge        & \qty[mode=text]{  1.40}{ \us} & \qty[mode=text]{  3.75}{ \ms} & 2686x\\
+                     & \pegaseLarge     & \qty[mode=text]{  2.37}{ \us} & \qty[mode=text]{  6.90}{ \ms} & 2911x\\
+                     & \pegaseXLarge    & \qty[mode=text]{  6.42}{ \us} & \qty[mode=text]{ 20.71}{ \ms} & 3227x\\
+                     & \gocXXL          & \qty[mode=text]{  5.67}{ \us} & \qty[mode=text]{ 17.87}{ \ms} & 3155x\\
+            \midrule
+            ED-R  & \ieeeSmall       & \qty[mode=text]{  1.06}{ \us} & \qty[mode=text]{  1.00}{ \ms} & 939x\\
+                     & \pegaseSmall     & \qty[mode=text]{  4.58}{ \us} & \qty[mode=text]{  3.42}{ \ms} & 748x\\
+                     & \rteLarge        & \qty[mode=text]{ 10.46}{ \us} & \qty[mode=text]{ 10.19}{ \ms} & 974x\\
+                     & \pegaseLarge     & \qty[mode=text]{ 20.14}{ \us} & \qty[mode=text]{ 18.38}{ \ms} & 913x\\
+                     & \pegaseXLarge    & \qty[mode=text]{ 42.67}{ \us} & \qty[mode=text]{ 60.73}{ \ms} & 1423x\\
+                     & \gocXXL          & \qty[mode=text]{ 39.80}{ \us} & \qty[mode=text]{ 49.17}{ \ms} & 1236x\\
+            \bottomrule
+        \end{tabular}\\
+        \footnotesize{Median computing times as measured by \texttt{BenchmarkTools}}
+    \end{table}
+    

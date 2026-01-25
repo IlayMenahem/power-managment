@@ -1,0 +1,127 @@
+\section{Training methodology}
+\label{sec:trainig_methodology}
+
+This section describes the supervised learning (SL) and
+self-supervised learning (SSL) approaches for training optimization
+proxies, \revision{}{which are illustrated in Figure \ref{fig:training}}.
+The difference between these two paradigms lies in the
+choice of loss function for training, not in the model architecture.
+Denote by $\x$ the input data of Problem \eqref{eq:DCOPF}, i.e.,
+\begin{align*}
+    \x = (c, \pd, R, \pgmax, \resmax, \Phi, \pfmin, \pfmax, \Mth),
+\end{align*}
+and recall, from Section \ref{sec:layers:reserve}, that it is
+sufficient to predict the (optimal) value of variables $\pg$. Denote
+by  $f_{\theta}$ the mapping of a DNN architecture with trainable
+parameters $\theta$; given an input $\x$, $f_{\theta}(\x)$
+predicts a generator dispatch \revision{}{$f_{\theta}(\x) = \hat{\pg}$}.
+
+\begin{figure}[!t]
+    \centering
+    \subfloat[\revision{}{Supervised Learning: the loss function $\mathcal{L}^{SL}$ measures the distance to an optimal solution $\mathbf{p}^{*}$, which is computed offline by an optimization solver.}]{
+        \includegraphics[width=0.95\columnwidth]{images/training/SL-crop.pdf}
+        \label{fig:training:SL}
+    }\\
+    \subfloat[\revision{}{Self-Supervised Learning: the loss function $\mathcal{L}^{SSL}$ measures the objective value of the prediction. No target $\mathbf{p}^{*}$ nor optimization solver is needed.}]{
+        \includegraphics[width=0.95\columnwidth]{images/training/SSL-crop.pdf}
+        \label{fig:training:SSL}
+    }
+    \caption{\revision{}{Illustration of supervised and self-supervised learning paradigms. When the ML model is not guaranteed to produce feasible solutions, the loss function $\mathcal{L}$ can be augmented with a constraint penalization term.}}
+    \label{fig:training}
+\end{figure}
+
+Consider a dataset of $N$ data points
+\begin{align}
+    \mathcal{D} &= \Big\{
+        \big( \x^{(1)}, \pg^{(1)} \big),
+        ..., 
+        \big( \x^{(N)}, \pg^{(N)} \big)
+    \Big\},
+\end{align}
+where each data point corresponds to an instance of Problem
+\eqref{eq:DCOPF} and its solution, i.e., $\x^{(i)}$ and $\pg^{(i)}$
+denote the input data and solution of instance $i \, {\in} \, \{1,
+..., N\}$, respectively. The training of the DNN $f_{\theta}$ can be
+formalized as the optimization problem
+\begin{align}
+    \label{eq:training}
+    \theta^* = \argmin_{\theta} \quad & \frac{1}{N} \sum_{i=1}^{N} \mathcal{L} \left( \hat{\pg}^{(i)}, \pg^{(i)} \right),
+\end{align}
+where $\hat{\pg}^{(i)} = f_{\theta^*}(\x^{(i)})$ is the prediction for
+instance $i$, and $\mathcal{L}$ denotes the loss function.
+The rest of this section describes the choice of \revision{}{loss function} $\mathcal{L}$ for the SL and SSL settings.
+
+\subsection{Supervised Learning}
+\label{sec:training:supervised}
+
+    The supervised learning loss $\mathcal{L}^{\text{SL}}$ has the form
+    \begin{align}
+        \label{eq:SL:loss}
+        \mathcal{L}^{\text{SL}} (\hat{\pg}, \pg) &= \varphi^{\text{SL}}(\hat{\pg}, \pg) + \lambda \psi(\hat{\pg}),
+    \end{align}
+    where $\varphi^{\text{SL}}(\hat{\pg}, \pg)$ penalizes the distance between the predicted and the target (ground truth) solutions, and $\psi(\hat{\pg})$ penalizes constraint violations.
+    The paper uses the Mean Absolute Error (MAE) on energy dispatch, i.e.,
+    \begin{align}
+        \label{eq:SL:loss:MAE}
+        \varphi^{\text{SL}}(\hat{\pg}, \pg) &= \frac{1}{|\mathcal{G}|} \| \hat{\pg} - \pg \|_{1}.
+    \end{align}
+    Note that other loss functions, e.g., Mean Squared Error (MSE),
+    could be used instead.  The term $\psi(\hat{\pg})$ penalizes power
+    balance violations and reserve shortages as follows:
+    \begin{align}
+        \label{eq:SL:constraint_penalty}
+        \psi(\hat{\pg}) = \Mpb |\mathbf{e}^{\top}\pd - \mathbf{e}^{\top} \hat{\pg} | + \Mres \xir(\hat{\pg}),
+    \end{align}
+    where $\Mpb$ and $\Mres$ are penalty coefficients, and $\xir$ denotes the reserve shortages, i.e.,
+    \begin{align}
+        \label{eq:SL:reserve_shortage}
+        \xir(\hat{\pg}) = \max \big\{ 0, R - \sum_g \min (\bar{r}_g, \bar{p}_g - \hat{p}_g) \big\}.
+    \end{align}
+    The penalty term $\psi$ is set to zero for end-to-end feasible
+    models. Finally, while thermal constraints are soft, preliminary
+    experiments found that including thermal violations in the loss
+    function yields more accurate models.
+    \revision{}{This observation echoes the findings of multiple studies \cite{Ng2018_StatisticalLearningDCOPF,pan2020deepopf,fioretto2020predicting,Nellikkath2021_PINN-DCOPF,donti2021dc3}, namely, that penalizing constraint violations yields better accuracy and improves generalization.
+    Indeed, the penalization of thermal violations acts as a regularizer in the loss function.}
+    Therefore, the final loss
+    considered in the paper is
+    \begin{align}
+        \label{eq:SL:loss:final}
+        \mathcal{L}^{\text{SL}} (\hat{\pg}, \pg) &= \varphi^{\text{SL}}(\hat{\pg}, \pg) + \lambda \psi(\hat{\pg}) + \mu \Mth \| \xith(\hat{\pg}) \|_1,
+    \end{align}
+    where $\xith(\hat{\pg})$ denotes thermal violations
+    (Eq. \eqref{eq:DCOPF:PTDF}).
+
+\subsection{Self-supervised Learning}
+\label{sec:training:self_supervised}
+
+\revision{}{Self-supervised learning has been applied very recently to train optimization proxies \cite{donti2021dc3,Huang2021_DeepOPF-NGT,park2023self}.
+The core aspect of SSL is that \emph{it does not require the labeled data $\mathbf{p}$}, because it directly minimizes the objective function of the original problem.
+The self-supervised loss guides the training to imitate the solving of optimization instances using gradient-based algorithms, which makes it effective for optimization proxies.}
+
+The loss function
+$\mathcal{L}^{\text{SSL}}$ has the form
+    \begin{align}
+        \label{eq:SSL:loss}
+        \revision{}{\mathcal{L}^{\text{SSL}} (\hat{\pg})} &= \varphi^{\text{SSL}}(\hat{\pg}) + \lambda \psi(\hat{\pg}),
+    \end{align}
+    where $\psi(\hat{\pg})$ is the same as Eq. \eqref{eq:SL:constraint_penalty}, and 
+    \begin{align}
+        \label{eq:SSL:objective}
+        \varphi^{\text{SSL}}(\hat{\pg}) &= c(\hat{\pg}) + \Mth \xith(\hat{\pg})
+    \end{align}
+is the objective value of the predicted solution.
+\revision{}{As mentioned above, note that $\mathcal{L}^{SLL}$ only depends on the predicted solution $\hat{\pg}$, i.e., unlike the supervised learning loss $\mathcal{L}^{SL}$ (see Eq. \eqref{eq:SL:loss:final}), it does not require any ground truth solution $\pg$.
+Consequently, SSL does not require labeled data.
+This, in turn, eliminates the need to solve numerous instances offline.}
+
+\revision{}{Again, the constraint penalty term is zero when training end-to-end feasible models, because their output satisfies all hard constraints.
+Thereby, the self-supervised loss is very effective since the learning focuses on optimality.}
+
+\revision{}{For models without feasibility guarantees, the trade-off between optimality and feasibility typically makes the training very hard to stabilize for large-scale systems, which increases the learning difficulty.
+Thus, such models must take care to satisfy constraints to avoid
+spurious solutions.  For instance, in the ED setting, simply
+minimizing total generation cost, without considering the power balance constraint \eqref{eq:DCOPF:power_balance}, yields the trivial solution $\pg \,
+{=} \, \mathbf{0}$.  This highlights the importance of ensuring
+feasibility, which is the core advantage of the proposed end-to-end
+feasible architecture.}

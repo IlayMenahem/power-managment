@@ -1,0 +1,65 @@
+\begin{figure}[ht]
+    \centering
+    \resizebox{0.42\columnwidth}{!}{
+    \begin{tikzpicture}[x=2cm,y=2cm]
+        % X Axis
+        \draw[black,-stealth] (-0.1, 0.0) -- (1.25, 0.0);
+        \node[below] at (1.25, 0.0) {\footnotesize $p_{1}$};
+        % Y axis
+        \draw[black,-stealth] (0.0, -0.1) -- (0.0, 1.25);
+        \node[left] at (0.0, 1.25) {\footnotesize $p_{2}$};
+        
+        % Unit hypercube
+        \draw[black] (0,0) -- (0, 1) -- (1,1) -- (1,0) -- cycle;
+        
+        % Power balance constraint
+        \draw[red,line width=1pt] (0.1, 1.1) -- (1.1, 0.1);
+        \node[right, color=red] at (0.1, 1.2) {\footnotesize $\mathbf{e}^{\top}\pg = D$};
+        
+        % Max output
+        \node[draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (p_bar) at (1.00, 1.00) {};
+        % Prediction
+        \node[diamond,draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (p_hat) at (0.30, 0.30) {};
+        \node[left] at (0.3, 0.3) {\footnotesize $\pg$};
+        % Feasible point
+        \node[circle,draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (p_til) at (0.6, 0.6) {};
+        \node[right] at (0.65, 0.6) {\footnotesize $\mathbf{{\tilde{p}}}$};
+        
+        % Proportional response visual
+        \draw[black,-stealth] (p_hat) -- (p_til);
+        \draw[black,densely dotted] (p_til) -- (p_bar);
+    \end{tikzpicture}}
+    \hfill
+    \resizebox{0.42\columnwidth}{!}{
+    \begin{tikzpicture}[x=2cm,y=2cm]
+        % X Axis
+        \draw[black,-stealth] (-0.1, 0.0) -- (1.25, 0.0);
+        \node[below] at (1.25, 0.0) {\footnotesize $p_{1}$};
+        % Y axis
+        \draw[black,-stealth] (0.0, -0.1) -- (0.0, 1.25);
+        \node[left] at (0.0, 1.25) {\footnotesize $p_{2}$};
+        
+        % Unit hypercube
+        \draw[black] (0,0) -- (0, 1) -- (1,1) -- (1,0) -- cycle;
+        
+        % Power balance constraint
+        \draw[red,line width=1pt] (0.1, 1.1) -- (1.1, 0.1);
+        \node[right, color=red] at (0.1, 1.2) {\footnotesize $\mathbf{e}^{\top}\pg = D$};
+        
+        % Min output
+        \node[draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (p_bar) at (0.00, 0.00) {};
+        % Prediction
+        \node[diamond,draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (p_hat) at (0.80, 0.80) {};
+        \node[right] at (0.8, 0.8) {\footnotesize $\pg$};
+        % Feasible point
+        \node[circle,draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (p_til) at (0.6, 0.6) {};
+        \node[left] at (0.58, 0.58) {\footnotesize $\mathbf{{\tilde{p}}}$};
+        
+        % Proportional response visual
+        \draw[black,-stealth] (p_hat) -- (p_til);
+        \draw[black,densely dotted] (p_til) -- (p_bar);
+    \end{tikzpicture}}
+    \hfill\\
+
+    \label{fig:feasibility_layer:hypersimplex}
+\end{figure}

@@ -1,0 +1,40 @@
+\section*{Experimental results}
+\subsection*{Dataset}
+The 6 datasets are derived from reference test cases in the PGLib library.
+\begin{table}[ht]
+\centering
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{|l|c|c|c|l|}
+\hline
+\textbf{System Name} & \textbf{Buses ($|\mathcal{N}|$)} & \textbf{Generators ($|\mathcal{G}|$)} & \textbf{Branches ($|\mathcal{E}|$)} & \textbf{Type} \\
+\hline
+ieee300 & 300 & 69 & 411 & Academic \\
+\hline
+pegase1k & 1,354 & 260 & 1,991 & Realistic \\
+\hline
+rte6470 & 6,470 & 761 & 9,005 & Real (French Grid) \\
+\hline
+pegase9k & 9,241 & 1,445 & 16,049 & Realistic \\
+\hline
+pegase13k & 13,659 & 4,092 & 20,467 & Realistic \\
+\hline
+goc30k & 30,000 & 3,526 & 35,393 & Synthetic (Large Scale) \\
+\hline
+\end{tabular}
+\end{table}
+The authors generated many datapoints by perturbing the reference cases. They created two categories of datasets: ED (Economic Dispatch without reserves) and ED-R (with reserves).
+
+the ground truth solutions were computed using the Gurobi optimizer.
+
+\subsection*{Implementation details}
+% loss functions
+the loss functions for supervised learning and self-supervised learning were:
+\[\mathcal{L}^{SL}(\hat{p}, p^*) = \underbrace{\frac{1}{|\mathcal{G}|} ||\hat{p} - p^*||_1}_{\text{MAE of Dispatch}} + \underbrace{\mu M_{th} ||\xi_{th}(\hat{p})||}_{\text{Thermal Constraints}} + \underbrace{\lambda \psi(\hat{p})}_{\text{Hard Constraints}}\]
+\[\mathcal{L}^{SSL}(p^*) = \underbrace{c(p^*)}_{\text{Generation Cost}} + \underbrace{M_{th} \xi_{th}(p^*)}_{\text{Thermal Penalties}} + \underbrace{\lambda \psi(\hat{p})}_{\text{Hard Constraints}}\]
+\[\psi(\hat{p}) = M_{pb}|e^T\boldsymbol{d} - e^T\hat{p}| + M_{r}\xi_{r}(\hat{p})\]
+where the hyperparameters were: $M_{th} = 1500$, $M_{pb} = 3500$, $M_{r} = 1100$.
+
+The models are simple Feed Forward Neural Networks with a sigmoid activation function and the repair layers. the dataset was split into 40000/5000/5000 for training/validation/test. the optimization was done using the Adam optimizer. the learning rate was reduced by a factor of 10 when the validation loss stopped improving for 10 consecutive epochs. the training was stopped when the validation loss stopped improving for 20 consecutive epochs. the hyperparameters were optimized using grid search.
+
+\subsection*{Results}
+The results have shown that the E2ELR model preformed better than the other models in terms of accuracy on every dataset. The E2ELR models also took around the same time to infer a solution as the other models.
