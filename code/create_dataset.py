@@ -15,10 +15,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 
-from data_generation import (
-    generate_dataset_vectorized,
-    save_dataset,
-)
 
 
 # MATPOWER bus matrix: bus_i=0, type=1, Pd=2, Qd=3, ...
