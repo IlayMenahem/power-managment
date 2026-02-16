@@ -62,14 +62,47 @@ R_batch = jnp.full(32, R)
 p_hat_batch = e2elr_batched(model, d_batch, p_max_batch, r_max_batch, R_batch)
 ```
 
+## Data generation
+
+Data generation follows the paper (Sec. 5.1): instances are obtained by perturbing a reference load profile. **Training is self-supervised only;** no labels (optimal solutions) are generated.
+
+- **Reference case:** An `.npz` file with keys `d_ref` (nodal demand) and `p_max` (generator limits). PGLib cases (e.g. ieee300, pegase1k) can be exported to this format externally (e.g. from MATPOWER/PGLib in MATLAB or a separate script).
+- **ED (no reserve):** Perturbed demand \\(d = \\gamma \\eta d^{\\text{ref}}\\) with \\(\\gamma \\sim U[0.8, 1.2]\\) and per-bus \\(\\eta\\) log-normal(mean=1, std=5%); \\(r_{\\max}=0\\), \\(R=0\\).
+- **ED-R (with reserve):** Same \\(d\\); \\(\\bar{r}_g = \\alpha_r \\bar{p}_g\\) with \\(\\alpha_r = 5 \\|\\bar{p}\\|_\\infty / \\|\\bar{p}\\|_1\\), and \\(R \\sim U(1,2) \\times \\max_g \\bar{p}_g\\).
+- **Splits:** 50,000 instances per case → 40,000 train, 5,000 validation, 5,000 test.
+
+**Run data generation:**
+
+```bash
+python data_generation.py --ref_case path/to/ref.npz --mode edr --n_instances 50000 --out_dir data
+```
+
+Output: `data/train.npz`, `data/val.npz`, `data/test.npz`, each with arrays `d`, `p_max`, `r_max`, `R` compatible with `E2ELR` and `e2elr_batched`. Use `--mode ed` for ED (no reserve). See `data_generation.py` for programmatic usage (`load_reference_case`, `generate_dataset_vectorized`, `make_synthetic_reference`, `load_dataset`).
+
+**Create dataset from PGLib .m cases (in `data/`):**
+
+If you have PGLib MATPOWER `.m` case files in `code/data/`, use `create_dataset.py` to parse them and build train/val/test splits:
+
+```bash
+# Process all .m files in data/
+python create_dataset.py --data_dir data --mode edr --n_instances 50000
+
+# Process a single case
+python create_dataset.py --data_dir data --case pglib_opf_case300_ieee.m --mode edr --n_instances 50000
+```
+
+This writes, per case: `data/<case_stem>_ref.npz` (reference `d_ref`, `p_max`) and `data/<case_stem>/train.npz`, `val.npz`, `test.npz`.
+
 ## Files
 
 | File | Purpose |
 |------|--------|
+| `create_dataset.py` | Build datasets from PGLib .m case files: parse bus/gen → ref .npz, then run data generation per case. |
+| `data_generation.py` | Data generation (paper Sec. 5.1): ED/ED-R sampling, dataset builder, reference loader. |
 | `repair_layers.py` | Power balance and reserve repair (pure JAX). |
 | `model.py` | E2ELR Equinox module (DNN + repair layers). |
 | `types.py` | Optional `EDInstance` for (d, p_max, r_max, R). |
-| `requirements.txt` | `jax`, `equinox`. |
+| `requirements.txt` | `jax`, `equinox`, `numpy`. |
 
 ## Notes
 
