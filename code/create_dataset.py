@@ -125,7 +125,7 @@ def pglib_to_ref_npz(m_path: str | Path, out_path: str | Path) -> tuple[np.ndarr
     return d_ref, p_max
 
 
-def main() -> None:
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Create E2ELR datasets from PGLib .m case files in code/data."
     )
@@ -202,27 +202,3 @@ def main() -> None:
         p_max = jnp.array(p_max_np)
         n_buses, n_gen = d_ref.shape[0], p_max.shape[0]
         print(f"  n_buses={n_buses}, n_gen={n_gen}, ref saved to {ref_path}")
-
-        dataset = generate_dataset_vectorized(
-            key,
-            d_ref,
-            p_max,
-            n_total=args.n_instances,
-            train_size=train_size,
-            val_size=val_size,
-            test_size=test_size,
-            mode=args.mode,
-        )
-        save_dataset(dataset, out_subdir)
-        print(
-            f"  Dataset saved to {out_subdir}: "
-            f"train {dataset['train'][0].shape[0]}, val {dataset['val'][0].shape[0]}, test {dataset['test'][0].shape[0]}."
-        )
-        # Advance key for next case
-        key, _ = jr.split(key)
-
-    print("Done.")
-
-
-if __name__ == "__main__":
-    main()
