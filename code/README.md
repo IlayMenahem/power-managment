@@ -42,7 +42,6 @@ model = E2ELR(
     out_size=n_gen,
     num_layers=3,
     hidden_size=256,
-    dropout_rate=0.2,
     key=key,
 )
 

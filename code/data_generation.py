@@ -164,13 +164,25 @@ def sample_edr_instance(
     return d, p_max, r_max, R
 
 
-def load_reference_case(path: str | Path) -> tuple[jnp.ndarray, jnp.ndarray]:
+def load_reference_case(
+    path: str | Path,
+) -> tuple[
+    jnp.ndarray,
+    jnp.ndarray,
+    dict | None,
+]:
     """
     Load reference case from npz with keys 'd_ref' and 'p_max'.
 
-    Optional keys: 'n_buses', 'n_generators' (for validation).
-    PGLib cases (e.g. ieee300, pegase1k) can be exported to this format
-    externally (e.g. from MATPOWER/PGLib in MATLAB or a separate script).
+    Optional keys (for SSL loss with cost and thermal violations): 'c_linear',
+    'f_min', 'f_max', 'Phi', 'PTDF_bus', 'Mth'. When present, they are returned
+    in a dict as the third element.
+
+    Returns:
+        d_ref: (n_buses,) reference demand.
+        p_max: (n_generators,) max generation.
+        ref_optional: None, or dict with keys c_linear, f_min, f_max, Phi,
+            PTDF_bus, Mth (JAX arrays / scalars) when present in the npz.
     """
     path = Path(path)
     if path.suffix.lower() != ".npz":
@@ -182,11 +194,23 @@ def load_reference_case(path: str | Path) -> tuple[jnp.ndarray, jnp.ndarray]:
         raise KeyError("npz must contain 'd_ref' and 'p_max'.")
     d_ref = jnp.array(data["d_ref"])
     p_max = jnp.array(data["p_max"])
-    return d_ref, p_max
+
+    ref_optional = None
+    optional_keys = ("c_linear", "f_min", "f_max", "Phi", "PTDF_bus", "Mth")
+    if all(k in data for k in optional_keys):
+        ref_optional = {
+            "c_linear": jnp.array(data["c_linear"]),
+            "f_min": jnp.array(data["f_min"]),
+            "f_max": jnp.array(data["f_max"]),
+            "Phi": jnp.array(data["Phi"]),
+            "PTDF_bus": jnp.array(data["PTDF_bus"]),
+            "Mth": float(jnp.array(data["Mth"]).item()),
+        }
+    return d_ref, p_max, ref_optional
 
 
 if __name__ == "__main__":
-    d_ref, p_max = load_reference_case("data/pglib_opf_case30000_goc_ref.npz")
+    d_ref, p_max, _ = load_reference_case("data/pglib_opf_case30000_goc_ref.npz")
     datasource = EDInstanceDataSource(d_ref, p_max, 100000)
     dataset = grain.MapDataset.source(datasource).batch(64)
     

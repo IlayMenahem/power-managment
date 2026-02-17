@@ -132,6 +132,37 @@ def reserve_recovery(
     return jnp.minimum(r_max, p_max - p)
 
 
+def thermal_violations_l1(
+    p: jnp.ndarray,
+    d: jnp.ndarray,
+    Phi: jnp.ndarray,
+    PTDF_bus: jnp.ndarray,
+    f_min: jnp.ndarray,
+    f_max: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Thermal violation vector and L1 norm for SSL loss (Eq. 32, training.tex).
+
+    flow = Phi @ p - PTDF_bus @ d; xi_th = max(0, flow - f_max) + max(0, f_min - flow).
+    Returns sum(xi_th) (scalar) for use in loss = c(p) + Mth * ||xi_th||_1.
+
+    Args:
+        p: Dispatch (n_generators,).
+        d: Nodal demand (n_buses,).
+        Phi: (n_branches, n_generators) = PTDF_bus @ Cg.
+        PTDF_bus: (n_branches, n_buses).
+        f_min, f_max: (n_branches,) branch thermal limits.
+
+    Returns:
+        Scalar: ||xi_th||_1 = sum over branches of thermal violations.
+    """
+    flow = Phi @ p - PTDF_bus @ d
+    xi_above = jnp.maximum(flow - f_max, 0.0)
+    xi_below = jnp.maximum(f_min - flow, 0.0)
+    xi_th = xi_above + xi_below
+    return jnp.sum(xi_th)
+
+
 # JIT-compiled versions for performance
 power_balance_repair_jit = jit(power_balance_repair)
 reserve_repair_jit = jit(reserve_repair)
@@ -155,7 +186,6 @@ class E2ELR(eqx.Module):
         out_size: int,
         num_layers: int = 3,
         hidden_size: int = 256,
-        dropout_rate: float = 0.2,
         *,
         key,
     ):
@@ -165,7 +195,6 @@ class E2ELR(eqx.Module):
             out_size: Number of generators (n).
             num_layers: Number of layers l in {3, 4, 5}; includes output layer.
             hidden_size: Hidden dimension hd in {128, 256}.
-            dropout_rate: Unused (kept for API compatibility). eqx.nn.MLP has no dropout.
             key: JAX PRNG key for initialization.
         """
         self.in_size = in_size
