@@ -84,7 +84,7 @@ def loss_and_accuracy(
     sum_d = jnp.sum(d_batch, axis=-1)
     sum_p = jnp.sum(p_hat, axis=-1)
     power_balance_viol = jnp.abs(sum_d - sum_p)
-    
+
     R_flat = jnp.broadcast_to(R_batch, (d_batch.shape[0],)) if R_batch.ndim == 0 else R_batch
     xi_r = _reserve_shortage(p_hat, p_max_batch, r_max_batch, R_flat)
     psi = M_pb * power_balance_viol + M_res * xi_r
@@ -257,13 +257,9 @@ def train_model(
 
 
 if __name__ == "__main__":
-    ref_path = os.path.join("data", "pglib_opf_case300_ieee_ref.npz")
+    ref_path = os.path.join("data", "pglib_opf_case6470_rte_ref.npz")
     d_ref, p_max_ref, ref = load_reference_case(ref_path)
-    if ref is None:
-        raise ValueError(
-            "Reference case must include SSL ref dict (c_linear, Phi, PTDF_bus, f_min, f_max, Mth). "
-            f"File {ref_path} is missing these keys."
-        )
+
 
     n_buses = d_ref.shape[0]
     n_gens = p_max_ref.shape[0]
@@ -287,8 +283,9 @@ if __name__ == "__main__":
         hidden_size=hidden_size,
         key=key,
     )
+    model = eqx.filter_jit(model)
 
-    learning_rate = 1e-3
+    learning_rate = 1e-4
     optimizer = optax.adam(learning_rate)
 
     train_dataset = make_grain_dataset(

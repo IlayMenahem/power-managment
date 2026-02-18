@@ -169,7 +169,7 @@ def load_reference_case(
 ) -> tuple[
     jnp.ndarray,
     jnp.ndarray,
-    dict | None,
+    dict,
 ]:
     """
     Load reference case from npz with keys 'd_ref' and 'p_max'.
@@ -195,18 +195,16 @@ def load_reference_case(
     d_ref = jnp.array(data["d_ref"])
     p_max = jnp.array(data["p_max"])
 
-    ref_optional = None
-    optional_keys = ("c_linear", "f_min", "f_max", "Phi", "PTDF_bus", "Mth")
-    if all(k in data for k in optional_keys):
-        ref_optional = {
-            "c_linear": jnp.array(data["c_linear"]),
-            "f_min": jnp.array(data["f_min"]),
-            "f_max": jnp.array(data["f_max"]),
-            "Phi": jnp.array(data["Phi"]),
-            "PTDF_bus": jnp.array(data["PTDF_bus"]),
-            "Mth": float(jnp.array(data["Mth"]).item()),
-        }
-    return d_ref, p_max, ref_optional
+    ref = {
+        "c_linear": jnp.array(data["c_linear"]),
+        "f_min": jnp.array(data["f_min"]),
+        "f_max": jnp.array(data["f_max"]),
+        "Phi": jnp.array(data["Phi"]),
+        "PTDF_bus": jnp.array(data["PTDF_bus"]),
+        "Mth": float(jnp.array(data["Mth"]).item()),
+    }
+
+    return d_ref, p_max, ref
 
 
 if __name__ == "__main__":
