@@ -152,10 +152,12 @@ class DNNBackbone(nn.Module):
     Fully-connected DNN with ReLU, BatchNorm, and Dropout.
 
     Input  : pd (n_bus,)
-    Output : z  (n_gen,) in [0, 1] via sigmoid
+    Outputs:
+        z     : (n_gen,) in [0, 1] via sigmoid  — generation fraction
+        theta : (n_bus,) raw (no activation)    — voltage angles
     """
 
-    def __init__(self, input_dim, output_dim, hidden_dim=256, n_layers=3, dropout=0.2):
+    def __init__(self, input_dim, output_dim, theta_dim, hidden_dim=256, n_layers=3, dropout=0.2):
         super().__init__()
         layers = []
         in_dim = input_dim
@@ -165,12 +167,13 @@ class DNNBackbone(nn.Module):
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout))
             in_dim = hidden_dim
-        layers.append(nn.Linear(hidden_dim, output_dim))
-        layers.append(nn.Sigmoid())
-        self.net = nn.Sequential(*layers)
+        self.shared = nn.Sequential(*layers)
+        self.pg_head = nn.Sequential(nn.Linear(hidden_dim, output_dim), nn.Sigmoid())
+        self.theta_head = nn.Linear(hidden_dim, theta_dim)
 
     def forward(self, pd):
-        return self.net(pd)
+        h = self.shared(pd)
+        return self.pg_head(h), self.theta_head(h)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +184,7 @@ class DNNModel(nn.Module):
     """
     Vanilla DNN baseline (Figure 2a in paper).
 
-    Predicts pg = sigmoid(DNN(pd)) * pg_max, then computes theta = B_pinv @ (pg_bus - pd).
+    Predicts pg = sigmoid(DNN(pd)) * pg_max and theta directly from the backbone.
     No feasibility layers — only enforces generation bounds [0, pg_max].
 
     Returns (pg, theta).
@@ -190,15 +193,13 @@ class DNNModel(nn.Module):
     def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3,
                  B_pinv=None, gen_bus_idx=None):
         super().__init__()
-        self.backbone = DNNBackbone(n_bus, n_gen, hidden_dim, n_layers)
+        self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
+                                    hidden_dim=hidden_dim, n_layers=n_layers)
         self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
-        self.register_buffer("B_pinv", torch.tensor(B_pinv, dtype=torch.float32))
-        self.register_buffer("gen_bus_idx", torch.tensor(gen_bus_idx, dtype=torch.long))
 
     def forward(self, pd):
-        z = self.backbone(pd)             # (batch, n_gen) in [0, 1]
+        z, theta = self.backbone(pd)      # (batch, n_gen), (batch, n_bus)
         pg = z * self.pg_max              # (batch, n_gen) in [0, pg_max]
-        theta = compute_theta(pg, pd, self.B_pinv, self.gen_bus_idx)
         return pg, theta
 
 
@@ -206,9 +207,9 @@ class E2ELRModel(nn.Module):
     """
     End-to-End Learning and Repair model (Figure 2e / Figure 3 in paper).
 
-    Pipeline: sigmoid(DNN(pd)) * pg_max -> PowerBalanceRepair -> ReserveRepair -> theta.
+    Pipeline: sigmoid(DNN(pd)) * pg_max -> PowerBalanceRepair -> ReserveRepair.
+    Theta is predicted directly by the backbone.
     Output satisfies all hard constraints (bounds, power balance, reserves).
-    Theta is exact (DC residual = 0) when power balance holds.
 
     Returns (pg, theta).
     """
@@ -216,12 +217,11 @@ class E2ELRModel(nn.Module):
     def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3,
                  problem_type="ed", r_max=None, B_pinv=None, gen_bus_idx=None):
         super().__init__()
-        self.backbone = DNNBackbone(n_bus, n_gen, hidden_dim, n_layers)
+        self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
+                                    hidden_dim=hidden_dim, n_layers=n_layers)
         self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
         self.power_balance = PowerBalanceRepair()
         self.problem_type = problem_type
-        self.register_buffer("B_pinv", torch.tensor(B_pinv, dtype=torch.float32))
-        self.register_buffer("gen_bus_idx", torch.tensor(gen_bus_idx, dtype=torch.long))
 
         if problem_type == "edr" and r_max is not None:
             self.register_buffer("r_max", torch.tensor(r_max, dtype=torch.float32))
@@ -239,7 +239,7 @@ class E2ELRModel(nn.Module):
         Returns:
             (pg, theta) : ((batch, n_gen), (batch, n_bus))
         """
-        z = self.backbone(pd)                          # (batch, n_gen) in [0, 1]
+        z, theta = self.backbone(pd)                   # (batch, n_gen), (batch, n_bus)
         pg = z * self.pg_max                           # enforce bounds
 
         pg = self.power_balance(pg, self.pg_max, D)    # enforce power balance
@@ -247,5 +247,4 @@ class E2ELRModel(nn.Module):
         if self.problem_type == "edr" and R is not None and self.reserve_repair is not None:
             pg = self.reserve_repair(pg, self.pg_max, self.r_max, R)
 
-        theta = compute_theta(pg, pd, self.B_pinv, self.gen_bus_idx)
         return pg, theta
