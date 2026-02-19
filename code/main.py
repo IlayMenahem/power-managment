@@ -19,7 +19,7 @@ from data_utils import (
     parse_matpower, extract_case_data, compute_B_matrix,
     generate_instances, solve_all_instances,
 )
-from models import DNNModel, E2ELRModel
+from models import DNNModel, E2ELRModel, E2ELRDCModel
 from train import (
     build_datasets, train_model, evaluate_model,
 )
@@ -37,7 +37,7 @@ if __name__ == "__main__":
                         help="Total number of instances to generate")
 
     # Model
-    parser.add_argument("--model", type=str, default="e2elr", choices=["dnn", "e2elr"],
+    parser.add_argument("--model", type=str, default="e2elr", choices=["dnn", "e2elr", "e2elrdc"],
                         help="Model architecture")
     parser.add_argument("--n_layers", type=int, default=3,
                         help="Number of hidden layers in DNN backbone")
@@ -187,6 +187,13 @@ if __name__ == "__main__":
             hidden_dim=args.hidden_dim, n_layers=args.n_layers,
             problem_type=args.problem, r_max=r_max_np,
             B_pinv=B_pinv, gen_bus_idx=case["gen_bus_idx"],
+        )
+    elif args.model == "e2elrdc":
+        model = E2ELRDCModel(
+            n_bus=case["n_bus"], n_gen=case["n_gen"], pg_max=case["pg_max"],
+            hidden_dim=args.hidden_dim, n_layers=args.n_layers,
+            problem_type=args.problem, r_max=r_max_np,
+            B=B_bus, gen_bus_idx=case["gen_bus_idx"],
         )
     else:
         raise ValueError(f"Unknown model: {args.model}")

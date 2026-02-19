@@ -14,6 +14,7 @@ Economic Dispatch" (arXiv 2304.11726v2), Sections III-IV.
 
 import torch
 import torch.nn as nn
+import scipy.sparse as sp
 
 EPS = 1e-8
 
@@ -190,8 +191,7 @@ class DNNModel(nn.Module):
     Returns (pg, theta).
     """
 
-    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3,
-                 B_pinv=None, gen_bus_idx=None):
+    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, B_pinv=None, gen_bus_idx=None):
         super().__init__()
         self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
                                     hidden_dim=hidden_dim, n_layers=n_layers)
@@ -214,8 +214,7 @@ class E2ELRModel(nn.Module):
     Returns (pg, theta).
     """
 
-    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3,
-                 problem_type="ed", r_max=None, B_pinv=None, gen_bus_idx=None):
+    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, problem_type="ed", r_max=None, B_pinv=None, gen_bus_idx=None):
         super().__init__()
         self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
                                     hidden_dim=hidden_dim, n_layers=n_layers)
@@ -246,5 +245,104 @@ class E2ELRModel(nn.Module):
 
         if self.problem_type == "edr" and R is not None and self.reserve_repair is not None:
             pg = self.reserve_repair(pg, self.pg_max, self.r_max, R)
+
+        return pg, theta
+
+
+class DCPowerFlowLayer(nn.Module):
+    """
+    DC Power Flow Repair Layer (proposed extension). This layer finds the theta
+    closest to the backbone output that satisfies the DC power flow equations.
+
+    Solves:  min ||theta_repaired - theta||  s.t.  B @ theta_repaired = pg_bus - pd
+    Closed-form:  theta_repaired = theta + B_pinv @ (pg_bus - pd - B @ theta)
+    """
+
+    def __init__(self, B_t, gen_bus_idx):
+        """
+        Args:
+            B_t         : (n_bus, n_bus) DC bus-admittance matrix B, supplied
+                          as a torch.Tensor or array-like. B_pinv is computed
+                          internally via torch.linalg.pinv.
+            gen_bus_idx : (n_gen,) integer array/tensor mapping each generator
+                          to its bus index.
+        """
+        super().__init__()
+        if not isinstance(B_t, torch.Tensor):
+            B_t = torch.tensor(B_t.toarray() if sp.issparse(B_t) else B_t, dtype=torch.float32)
+        if not isinstance(gen_bus_idx, torch.Tensor):
+            gen_bus_idx = torch.tensor(gen_bus_idx, dtype=torch.long)
+        self.register_buffer("B_t", B_t)
+        self.register_buffer("B_pinv_t", torch.linalg.pinv(B_t))
+        self.register_buffer("gen_bus_idx_t", gen_bus_idx)
+
+    def forward(self, pg, pd, theta):
+        """
+        Args:
+            pg    : (batch, n_gen) generator dispatch
+            pd    : (batch, n_bus) bus demand
+            theta : (batch, n_bus) voltage angles predicted by the backbone
+        Returns:
+            theta_repaired : (batch, n_bus) closest theta to the backbone output
+                             satisfying B @ theta_repaired = pg_bus - pd
+        """
+        batch_size = pg.shape[0]
+        n_bus = pd.shape[1]
+
+        # Scatter per-generator dispatch onto buses
+        pg_bus = torch.zeros(batch_size, n_bus, device=pg.device, dtype=pg.dtype)
+        pg_bus.scatter_add_(
+            1,
+            self.gen_bus_idx_t.unsqueeze(0).expand(batch_size, -1),
+            pg,
+        )
+
+        net = pg_bus - pd                               # (batch, n_bus) net injection
+        residual = net - theta @ self.B_t.T             # (batch, n_bus):  b - B @ theta
+        theta_repaired = theta + residual @ self.B_pinv_t.T  # projection onto affine subspace
+        return theta_repaired
+
+
+class E2ELRDCModel(nn.Module):
+    """
+    E2ELR with DC power flow repair layer (proposed extension).
+    We add a layer that finds the closest to the network output theta satisfying the DC power flow equations
+    Returns (pg, theta).
+    """
+
+    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, problem_type="ed", r_max=None, B=None, gen_bus_idx=None):
+        super().__init__()
+        self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
+                                    hidden_dim=hidden_dim, n_layers=n_layers)
+        self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
+        self.power_balance = PowerBalanceRepair()
+        self.DC_power_flow = DCPowerFlowLayer(B, gen_bus_idx)
+        self.problem_type = problem_type
+
+        if problem_type == "edr" and r_max is not None:
+            self.register_buffer("r_max", torch.tensor(r_max, dtype=torch.float32))
+            self.reserve_repair = ReserveRepair()
+        else:
+            self.r_max = None
+            self.reserve_repair = None
+
+    def forward(self, pd, D, R=None):
+        """
+        Args:
+            pd : (batch, n_bus)  demand vector
+            D  : (batch, 1)      total demand = pd.sum(dim=-1, keepdim=True)
+            R  : (batch, 1)      reserve requirement (only for ED-R)
+        Returns:
+            (pg, theta) : ((batch, n_gen), (batch, n_bus))
+        """
+        z, theta = self.backbone(pd)                   # (batch, n_gen), (batch, n_bus)
+        pg = z * self.pg_max                           # enforce bounds
+
+        pg = self.power_balance(pg, self.pg_max, D)    # enforce power balance
+
+        if self.problem_type == "edr" and R is not None and self.reserve_repair is not None:
+            pg = self.reserve_repair(pg, self.pg_max, self.r_max, R)
+
+        theta = self.DC_power_flow(pg, pd, theta)     # enforce DC power flow equations
 
         return pg, theta
