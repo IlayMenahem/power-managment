@@ -21,32 +21,62 @@ from torch.utils.data import DataLoader, TensorDataset
 # Penalty / violation helpers
 # ---------------------------------------------------------------------------
 
-# MISO-based penalty prices in $/MW (Section V-C)
-# Quantities in the loss (thermal flow, power balance, reserve) are in p.u.,
-# so effective cost scales by baseMVA implicitly.
-M_TH = 1500.0    # thermal violation penalty  (1500 $/MW)
-M_PB = 3500.0    # power balance penalty      (3500 $/MW)
-M_RES = 1100.0   # reserve shortage penalty   (1100 $/MW)
+# MISO-based penalty prices (Section V-C), converted to $/p.u. with baseMVA=100
+M_TH = 1500.0    # thermal violation: 1500 $/MW -> 15 $/p.u.
+M_PB = 3500.0    # power balance: 3500 $/MW -> 35 $/p.u.
+M_RES = 1100.0   # reserve shortage: 1100 $/MW -> 11 $/p.u.
+M_DC = 3500.0    # DC power flow residual: same scale as power balance
 
 
-def compute_thermal_violations(pg, pd, ptdf_gen, ptdf_full, branch_rate):
+def compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t):
     """
-    Compute per-branch thermal violations: xi_e = max(0, |f_e| - f_max_e).
+    Compute per-branch thermal violations from explicit voltage angles.
+
+    Branch flow: f_e = b_branch[e] * (theta[branch_from[e]] - theta[branch_to[e]])
+    Thermal violation: xi_e = max(0, |f_e| - rate_e)
 
     Args:
-        pg          : (batch, n_gen)
-        pd          : (batch, n_bus)
-        ptdf_gen    : (n_branch, n_gen) tensor
-        ptdf_full   : (n_branch, n_bus) tensor
-        branch_rate : (n_branch,) tensor
+        theta        : (batch, n_bus)
+        b_branch_t   : (n_branch,) tensor  branch susceptances
+        branch_from  : (n_branch,) int array  from-bus indices
+        branch_to    : (n_branch,) int array  to-bus indices
+        branch_rate_t: (n_branch,) tensor  thermal limits
 
     Returns:
         xi : (batch, n_branch)  thermal violations
     """
-    # Branch flow = ptdf_gen @ pg^T - ptdf_full @ pd^T  (each column is one instance)
-    flow = (pg @ ptdf_gen.T) - (pd @ ptdf_full.T)  # (batch, n_branch)
-    xi = torch.clamp(flow.abs() - branch_rate.unsqueeze(0), min=0.0)
+    flow = b_branch_t.unsqueeze(0) * (
+        theta[:, branch_from] - theta[:, branch_to]
+    )  # (batch, n_branch)
+    xi = torch.clamp(flow.abs() - branch_rate_t.unsqueeze(0), min=0.0)
     return xi
+
+
+def compute_dc_violations(theta, pg, pd, B_bus_t, gen_bus_idx_t):
+    """
+    DC power flow residual per instance: ||B_bus @ theta - (pg_bus - pd)||_1.
+
+    For E2ELR (power balance enforced) this is exactly 0.
+    For DNN this penalises deviations from the DC power flow equations.
+
+    Args:
+        theta        : (batch, n_bus)
+        pg           : (batch, n_gen)
+        pd           : (batch, n_bus)
+        B_bus_t      : (n_bus, n_bus) tensor  bus susceptance matrix
+        gen_bus_idx_t: (n_gen,) long tensor
+
+    Returns:
+        residual : (batch, 1)
+    """
+    batch_size = pg.shape[0]
+    n_bus = pd.shape[1]
+    pg_bus = torch.zeros(batch_size, n_bus, device=pg.device, dtype=pg.dtype)
+    pg_bus.scatter_add_(1, gen_bus_idx_t.unsqueeze(0).expand(batch_size, -1), pg)
+    net = pg_bus - pd                        # (batch, n_bus)
+    B_theta = theta @ B_bus_t.T              # (batch, n_bus)  B_bus is symmetric
+    residual = (B_theta - net).abs().sum(dim=-1, keepdim=True)  # (batch, 1)
+    return residual
 
 
 def compute_power_balance_violation(pg, D):
@@ -76,22 +106,27 @@ def compute_constraint_penalty(pg, D, pg_max, r_max, R, problem_type="ed"):
 # Loss Functions
 # ---------------------------------------------------------------------------
 
-def loss_sl(pg_hat, pg_star, pd, D, cost_coef, pg_max, r_max, R,
-            ptdf_gen, ptdf_full, branch_rate,
+def loss_sl(pg_hat, theta, pg_star, pd, D, cost_coef, pg_max, r_max, R,
+            b_branch_t, branch_from, branch_to, branch_rate_t,
+            B_bus_t, gen_bus_idx_t,
             lam, mu, problem_type, is_feasible_model):
     """
-    Supervised Learning loss (Eq. 10).
+    Supervised Learning loss (Eq. 10, extended with DC penalty).
 
-    L_SL = MAE(pg_hat, pg_star) + lambda * psi(pg_hat) + mu * M_th * ||xi||_1
+    L_SL = MAE(pg_hat, pg_star) + lambda * psi(pg_hat)
+           + mu * M_TH * ||xi||_1 + M_DC * ||B*theta - net||_1
     """
     n_gen = pg_hat.shape[1]
 
     # MAE on dispatch
     mae = (pg_hat - pg_star).abs().sum(dim=-1).mean() / n_gen
 
-    # Thermal violations
-    xi = compute_thermal_violations(pg_hat, pd, ptdf_gen, ptdf_full, branch_rate)
+    # Thermal violations (from explicit theta)
+    xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
     thermal_pen = mu * M_TH * xi.sum(dim=-1).mean()
+
+    # DC power flow residual
+    dc_pen = M_DC * compute_dc_violations(theta, pg_hat, pd, B_bus_t, gen_bus_idx_t).mean()
 
     # Constraint penalty (zero for feasible models)
     if is_feasible_model:
@@ -100,23 +135,28 @@ def loss_sl(pg_hat, pg_star, pd, D, cost_coef, pg_max, r_max, R,
         psi = compute_constraint_penalty(pg_hat, D, pg_max, r_max, R, problem_type)
         constraint_pen = lam * psi.mean()
 
-    return mae + constraint_pen + thermal_pen
+    return mae + constraint_pen + thermal_pen + dc_pen
 
 
-def loss_ssl(pg_hat, pd, D, cost_coef, pg_max, r_max, R,
-             ptdf_gen, ptdf_full, branch_rate,
+def loss_ssl(pg_hat, theta, pd, D, cost_coef, pg_max, r_max, R,
+             b_branch_t, branch_from, branch_to, branch_rate_t,
+             B_bus_t, gen_bus_idx_t,
              lam, problem_type, is_feasible_model):
     """
-    Self-Supervised Learning loss (Eq. 12).
+    Self-Supervised Learning loss (Eq. 12, extended with DC penalty).
 
-    L_SSL = c(pg_hat) + M_th * ||xi||_1 + lambda * psi(pg_hat)
+    L_SSL = c(pg_hat) + M_TH * ||xi||_1 + M_DC * ||B*theta - net||_1
+            + lambda * psi(pg_hat)
     """
     # Generation cost
     gen_cost = (cost_coef.unsqueeze(0) * pg_hat).sum(dim=-1).mean()
 
-    # Thermal violations
-    xi = compute_thermal_violations(pg_hat, pd, ptdf_gen, ptdf_full, branch_rate)
+    # Thermal violations (from explicit theta)
+    xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
     thermal_pen = M_TH * xi.sum(dim=-1).mean()
+
+    # DC power flow residual
+    dc_pen = M_DC * compute_dc_violations(theta, pg_hat, pd, B_bus_t, gen_bus_idx_t).mean()
 
     # Constraint penalty (zero for feasible models)
     if is_feasible_model:
@@ -125,7 +165,7 @@ def loss_ssl(pg_hat, pd, D, cost_coef, pg_max, r_max, R,
         psi = compute_constraint_penalty(pg_hat, D, pg_max, r_max, R, problem_type)
         constraint_pen = lam * psi.mean()
 
-    return gen_cost + thermal_pen + constraint_pen
+    return gen_cost + thermal_pen + dc_pen + constraint_pen
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +215,8 @@ def build_datasets(instances, pg_star, obj_star, case, problem_type, device="cpu
 
 def train_model(model, datasets, case, problem_type, mode="ssl",
                 lam=0.0, mu=0.0,
-                ptdf_gen_t=None, ptdf_full_t=None, branch_rate_t=None,
+                b_branch_t=None, branch_from=None, branch_to=None,
+                branch_rate_t=None, B_bus_t=None, gen_bus_idx_t=None,
                 cost_coef_t=None, pg_max_t=None, r_max_t=None,
                 lr=1e-2, weight_decay=1e-6,
                 batch_size_train=64, batch_size_eval=256,
@@ -197,6 +238,7 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
         dict with training history (losses, best epoch, etc.)
     """
     is_feasible = hasattr(model, "power_balance") and model.power_balance is not None
+    n_bus = case["n_bus"]
 
     train_loader = DataLoader(datasets["train"], batch_size=batch_size_train, shuffle=True)
     val_loader = DataLoader(datasets["val"], batch_size=batch_size_eval, shuffle=False)
@@ -228,25 +270,27 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
             pd_b, R_b, pg_star_b, obj_star_b = batch
             D_b = pd_b.sum(dim=-1, keepdim=True)
 
-            # Forward pass
+            # Forward pass -> (pg, theta)
             if is_feasible:
-                pg_hat = model(pd_b, D_b, R_b)
+                pg_hat, theta = model(pd_b, D_b, R_b)
             else:
-                pg_hat = model(pd_b)
+                pg_hat, theta = model(pd_b)
 
             # Loss
             if mode == "sl":
                 loss = loss_sl(
-                    pg_hat, pg_star_b, pd_b, D_b,
+                    pg_hat, theta, pg_star_b, pd_b, D_b,
                     cost_coef_t, pg_max_t, r_max_t, R_b,
-                    ptdf_gen_t, ptdf_full_t, branch_rate_t,
+                    b_branch_t, branch_from, branch_to, branch_rate_t,
+                    B_bus_t, gen_bus_idx_t,
                     lam, mu, problem_type, is_feasible,
                 )
             else:
                 loss = loss_ssl(
-                    pg_hat, pd_b, D_b,
+                    pg_hat, theta, pd_b, D_b,
                     cost_coef_t, pg_max_t, r_max_t, R_b,
-                    ptdf_gen_t, ptdf_full_t, branch_rate_t,
+                    b_branch_t, branch_from, branch_to, branch_rate_t,
+                    B_bus_t, gen_bus_idx_t,
                     lam, problem_type, is_feasible,
                 )
 
@@ -267,22 +311,24 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
                 D_b = pd_b.sum(dim=-1, keepdim=True)
 
                 if is_feasible:
-                    pg_hat = model(pd_b, D_b, R_b)
+                    pg_hat, theta = model(pd_b, D_b, R_b)
                 else:
-                    pg_hat = model(pd_b)
+                    pg_hat, theta = model(pd_b)
 
                 if mode == "sl":
                     loss = loss_sl(
-                        pg_hat, pg_star_b, pd_b, D_b,
+                        pg_hat, theta, pg_star_b, pd_b, D_b,
                         cost_coef_t, pg_max_t, r_max_t, R_b,
-                        ptdf_gen_t, ptdf_full_t, branch_rate_t,
+                        b_branch_t, branch_from, branch_to, branch_rate_t,
+                        B_bus_t, gen_bus_idx_t,
                         lam, mu, problem_type, is_feasible,
                     )
                 else:
                     loss = loss_ssl(
-                        pg_hat, pd_b, D_b,
+                        pg_hat, theta, pd_b, D_b,
                         cost_coef_t, pg_max_t, r_max_t, R_b,
-                        ptdf_gen_t, ptdf_full_t, branch_rate_t,
+                        b_branch_t, branch_from, branch_to, branch_rate_t,
+                        B_bus_t, gen_bus_idx_t,
                         lam, problem_type, is_feasible,
                     )
                 val_losses.append(loss.item())
@@ -328,7 +374,8 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
 
 @torch.no_grad()
 def evaluate_model(model, dataset, case, problem_type,
-                   ptdf_gen_t, ptdf_full_t, branch_rate_t,
+                   b_branch_t, branch_from, branch_to, branch_rate_t,
+                   B_bus_t, gen_bus_idx_t,
                    cost_coef_t, pg_max_t, r_max_t,
                    batch_size=256, tol=1e-4, device="cpu"):
     """
@@ -337,6 +384,7 @@ def evaluate_model(model, dataset, case, problem_type,
       - Feasibility rate (% satisfying all hard constraints)
       - Mean power balance violation
       - Mean reserve shortage (for ED-R)
+      - Mean DC power flow violation
 
     Returns dict with metrics.
     """
@@ -347,6 +395,7 @@ def evaluate_model(model, dataset, case, problem_type,
     all_gaps = []
     all_pb_viol = []
     all_res_short = []
+    all_dc_viol = []
     all_feasible = []
 
     for batch in loader:
@@ -354,18 +403,21 @@ def evaluate_model(model, dataset, case, problem_type,
         D_b = pd_b.sum(dim=-1, keepdim=True)
 
         if is_feasible:
-            pg_hat = model(pd_b, D_b, R_b)
+            pg_hat, theta = model(pd_b, D_b, R_b)
         else:
-            pg_hat = model(pd_b)
+            pg_hat, theta = model(pd_b)
 
         # --- Compute penalized objective for predictions ---
         gen_cost = (cost_coef_t.unsqueeze(0) * pg_hat).sum(dim=-1)
 
-        xi = compute_thermal_violations(pg_hat, pd_b, ptdf_gen_t, ptdf_full_t, branch_rate_t)
+        xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
         thermal = M_TH * xi.sum(dim=-1)
 
         pb_viol = compute_power_balance_violation(pg_hat, D_b).squeeze(-1)
         pb_pen = M_PB * pb_viol
+
+        dc_viol = compute_dc_violations(theta, pg_hat, pd_b, B_bus_t, gen_bus_idx_t).squeeze(-1)
+        dc_pen = M_DC * dc_viol
 
         if problem_type == "edr":
             res_short = compute_reserve_shortage(pg_hat, pg_max_t, r_max_t, R_b).squeeze(-1)
@@ -374,7 +426,7 @@ def evaluate_model(model, dataset, case, problem_type,
             res_short = torch.zeros_like(pb_viol)
             res_pen = torch.zeros_like(pb_viol)
 
-        z_hat = gen_cost + thermal + pb_pen + res_pen
+        z_hat = gen_cost + thermal + pb_pen + res_pen + dc_pen
         z_star = obj_star_b
 
         # Optimality gap (only for instances with valid ground truth)
@@ -384,20 +436,23 @@ def evaluate_model(model, dataset, case, problem_type,
         # Feasibility check
         bounds_ok = (pg_hat >= -tol).all(dim=-1) & (pg_hat <= pg_max_t.unsqueeze(0) + tol).all(dim=-1)
         pb_ok = pb_viol < tol
+        dc_ok = dc_viol < tol
         if problem_type == "edr":
             res_ok = res_short < tol
-            feasible = bounds_ok & pb_ok & res_ok
+            feasible = bounds_ok & pb_ok & dc_ok & res_ok
         else:
-            feasible = bounds_ok & pb_ok
+            feasible = bounds_ok & pb_ok & dc_ok
 
         all_gaps.append(gaps)
         all_pb_viol.append(pb_viol)
         all_res_short.append(res_short)
+        all_dc_viol.append(dc_viol)
         all_feasible.append(feasible)
 
     all_gaps = torch.cat(all_gaps).cpu().numpy()
     all_pb_viol = torch.cat(all_pb_viol).cpu().numpy()
     all_res_short = torch.cat(all_res_short).cpu().numpy()
+    all_dc_viol = torch.cat(all_dc_viol).cpu().numpy()
     all_feasible = torch.cat(all_feasible).cpu().numpy()
 
     # Shifted geometric mean for gaps (shift s=0.01 i.e. 1%)
@@ -414,6 +469,7 @@ def evaluate_model(model, dataset, case, problem_type,
         "feasibility_rate_pct": 100.0 * np.mean(all_feasible),
         "mean_pb_violation_pu": np.mean(all_pb_viol),
         "mean_reserve_shortage_pu": np.mean(all_res_short),
+        "mean_dc_violation_pu": np.mean(all_dc_viol),
     }
 
     return results

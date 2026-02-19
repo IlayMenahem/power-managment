@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from data_utils import (
-    parse_matpower, extract_case_data, compute_ptdf,
+    parse_matpower, extract_case_data, compute_B_matrix,
     generate_instances, solve_all_instances,
 )
 from models import DNNModel, E2ELRModel
@@ -100,12 +100,12 @@ if __name__ == "__main__":
           f"({case['pg_max'].sum() * case['baseMVA']:.0f} MW)")
 
     # -----------------------------------------------------------------------
-    # 2. Compute PTDF matrix
+    # 2. Compute B-matrix
     # -----------------------------------------------------------------------
-    print("\nComputing PTDF matrix...")
+    print("\nComputing B-matrix...")
     t0 = time.time()
-    ptdf_full, ptdf_gen = compute_ptdf(case)
-    print(f"  PTDF shape: ({ptdf_full.shape[0]}, {ptdf_full.shape[1]}) — done in {time.time()-t0:.2f}s")
+    B_bus, B_pinv, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack = compute_B_matrix(case)
+    print(f"  B_pinv shape: {B_pinv.shape} — done in {time.time()-t0:.2f}s")
 
     # -----------------------------------------------------------------------
     # 3. Generate instances
@@ -144,7 +144,7 @@ if __name__ == "__main__":
             print("\nSolving instances with CVXPY...")
             t0 = time.time()
             pg_star, obj_star = solve_all_instances(
-                instances, case, ptdf_full, ptdf_gen,
+                instances, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
                 problem_type=args.problem, M_th=15.0, verbose=True,
             )
             print(f"  Solving done in {(time.time()-t0)/60:.1f} min")
@@ -179,12 +179,14 @@ if __name__ == "__main__":
         model = DNNModel(
             n_bus=case["n_bus"], n_gen=case["n_gen"], pg_max=case["pg_max"],
             hidden_dim=args.hidden_dim, n_layers=args.n_layers,
+            B_pinv=B_pinv, gen_bus_idx=case["gen_bus_idx"],
         )
     elif args.model == "e2elr":
         model = E2ELRModel(
             n_bus=case["n_bus"], n_gen=case["n_gen"], pg_max=case["pg_max"],
             hidden_dim=args.hidden_dim, n_layers=args.n_layers,
             problem_type=args.problem, r_max=r_max_np,
+            B_pinv=B_pinv, gen_bus_idx=case["gen_bus_idx"],
         )
     else:
         raise ValueError(f"Unknown model: {args.model}")
@@ -196,9 +198,12 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
     # 7. Prepare tensors for loss computation
     # -----------------------------------------------------------------------
-    ptdf_gen_t = torch.tensor(ptdf_gen, dtype=torch.float32, device=device)
-    ptdf_full_t = torch.tensor(ptdf_full, dtype=torch.float32, device=device)
+    b_branch_t = torch.tensor(b_branch, dtype=torch.float32, device=device)
+    branch_from = case["branch_from"]   # int numpy array, used as index
+    branch_to = case["branch_to"]       # int numpy array, used as index
     branch_rate_t = torch.tensor(case["branch_rate"], dtype=torch.float32, device=device)
+    B_bus_t = torch.tensor(B_bus.toarray(), dtype=torch.float32, device=device)
+    gen_bus_idx_t = torch.tensor(case["gen_bus_idx"], dtype=torch.long, device=device)
     cost_coef_t = torch.tensor(case["cost_coef"], dtype=torch.float32, device=device)
     pg_max_t = torch.tensor(case["pg_max"], dtype=torch.float32, device=device)
     r_max_t = torch.tensor(instances["r_max"], dtype=torch.float32, device=device)
@@ -227,9 +232,9 @@ if __name__ == "__main__":
     history = train_model(
         model, datasets, case, args.problem, mode=args.mode,
         lam=lam, mu=mu,
-        ptdf_gen_t=ptdf_gen_t, ptdf_full_t=ptdf_full_t,
-        branch_rate_t=branch_rate_t, cost_coef_t=cost_coef_t,
-        pg_max_t=pg_max_t, r_max_t=r_max_t,
+        b_branch_t=b_branch_t, branch_from=branch_from, branch_to=branch_to,
+        branch_rate_t=branch_rate_t, B_bus_t=B_bus_t, gen_bus_idx_t=gen_bus_idx_t,
+        cost_coef_t=cost_coef_t, pg_max_t=pg_max_t, r_max_t=r_max_t,
         lr=args.lr, weight_decay=1e-6,
         batch_size_train=args.batch_size, batch_size_eval=256,
         max_epochs=args.max_epochs, patience=args.patience,
@@ -247,7 +252,8 @@ if __name__ == "__main__":
 
         results = evaluate_model(
             model, datasets["test"], case, args.problem,
-            ptdf_gen_t, ptdf_full_t, branch_rate_t,
+            b_branch_t, branch_from, branch_to, branch_rate_t,
+            B_bus_t, gen_bus_idx_t,
             cost_coef_t, pg_max_t, r_max_t,
             batch_size=256, tol=1e-4, device=device,
         )
@@ -258,6 +264,7 @@ if __name__ == "__main__":
         print(f"  Feasibility Rate:        {results['feasibility_rate_pct']:.2f}%")
         print(f"  Mean PB Violation:       {results['mean_pb_violation_pu']:.6f} p.u.")
         print(f"  Mean Reserve Shortage:   {results['mean_reserve_shortage_pu']:.6f} p.u.")
+        print(f"  Mean DC Violation:       {results['mean_dc_violation_pu']:.6f} p.u.")
         print(f"  Training Time:           {history['training_time_min']:.1f} min")
     else:
         print("\nNo ground truth available — skipping evaluation metrics.")

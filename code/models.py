@@ -5,6 +5,9 @@ Implements:
   - DNN:   Vanilla fully-connected network (baseline, no feasibility layers)
   - E2ELR: End-to-End Learning and Repair (DNN + Power Balance + Reserve repair)
 
+All models return (pg, theta) where theta = B_pinv @ (pg_bus - pd) is the
+minimum-norm DC voltage angle satisfying the power flow equations.
+
 Reference: "End-to-End Feasible Optimization Proxies for Large-Scale
 Economic Dispatch" (arXiv 2304.11726v2), Sections III-IV.
 """
@@ -13,6 +16,33 @@ import torch
 import torch.nn as nn
 
 EPS = 1e-8
+
+
+# ---------------------------------------------------------------------------
+# Shared theta computation
+# ---------------------------------------------------------------------------
+
+def compute_theta(pg, pd, B_pinv_t, gen_bus_idx_t):
+    """
+    Compute minimum-norm DC voltage angles: theta = B_pinv @ (pg_bus - pd).
+
+    Args:
+        pg           : (batch, n_gen)  generator dispatch
+        pd           : (batch, n_bus)  bus demand
+        B_pinv_t     : (n_bus, n_bus)  pseudoinverse of B_bus (tensor)
+        gen_bus_idx_t: (n_gen,) long   bus index for each generator
+
+    Returns:
+        theta : (batch, n_bus)
+    """
+    batch_size = pg.shape[0]
+    n_bus = pd.shape[1]
+    # Scatter pg onto buses
+    pg_bus = torch.zeros(batch_size, n_bus, device=pg.device, dtype=pg.dtype)
+    pg_bus.scatter_add_(1, gen_bus_idx_t.unsqueeze(0).expand(batch_size, -1), pg)
+    net = pg_bus - pd                   # (batch, n_bus) net injection
+    theta = net @ B_pinv_t.T            # (batch, n_bus)  B_pinv is symmetric, but .T is safe
+    return theta
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +72,7 @@ class PowerBalanceRepair(nn.Module):
         """
         total_gen = pg.sum(dim=-1, keepdim=True)        # (batch, 1)
         total_max = pg_max.sum(dim=-1, keepdim=True) if pg_max.dim() > 1 \
-            else pg_max.sum().view(1, 1)                 # (n_gen,) -> (1, 1)
+            else pg_max.sum().unsqueeze(0).unsqueeze(0)  # scalar -> (1, 1)
 
         # Shortage: need to increase generation
         eta_up = (D - total_gen) / (total_max - total_gen + EPS)
@@ -151,36 +181,47 @@ class DNNModel(nn.Module):
     """
     Vanilla DNN baseline (Figure 2a in paper).
 
-    Predicts pg = sigmoid(DNN(pd)) * pg_max.
+    Predicts pg = sigmoid(DNN(pd)) * pg_max, then computes theta = B_pinv @ (pg_bus - pd).
     No feasibility layers — only enforces generation bounds [0, pg_max].
+
+    Returns (pg, theta).
     """
 
-    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3):
+    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3,
+                 B_pinv=None, gen_bus_idx=None):
         super().__init__()
         self.backbone = DNNBackbone(n_bus, n_gen, hidden_dim, n_layers)
         self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
+        self.register_buffer("B_pinv", torch.tensor(B_pinv, dtype=torch.float32))
+        self.register_buffer("gen_bus_idx", torch.tensor(gen_bus_idx, dtype=torch.long))
 
     def forward(self, pd):
         z = self.backbone(pd)             # (batch, n_gen) in [0, 1]
         pg = z * self.pg_max              # (batch, n_gen) in [0, pg_max]
-        return pg
+        theta = compute_theta(pg, pd, self.B_pinv, self.gen_bus_idx)
+        return pg, theta
 
 
 class E2ELRModel(nn.Module):
     """
     End-to-End Learning and Repair model (Figure 2e / Figure 3 in paper).
 
-    Predicts pg = ReserveRepair(PowerBalanceRepair(sigmoid(DNN(pd)) * pg_max)).
+    Pipeline: sigmoid(DNN(pd)) * pg_max -> PowerBalanceRepair -> ReserveRepair -> theta.
     Output satisfies all hard constraints (bounds, power balance, reserves).
+    Theta is exact (DC residual = 0) when power balance holds.
+
+    Returns (pg, theta).
     """
 
     def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3,
-                 problem_type="ed", r_max=None):
+                 problem_type="ed", r_max=None, B_pinv=None, gen_bus_idx=None):
         super().__init__()
         self.backbone = DNNBackbone(n_bus, n_gen, hidden_dim, n_layers)
         self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
         self.power_balance = PowerBalanceRepair()
         self.problem_type = problem_type
+        self.register_buffer("B_pinv", torch.tensor(B_pinv, dtype=torch.float32))
+        self.register_buffer("gen_bus_idx", torch.tensor(gen_bus_idx, dtype=torch.long))
 
         if problem_type == "edr" and r_max is not None:
             self.register_buffer("r_max", torch.tensor(r_max, dtype=torch.float32))
@@ -196,7 +237,7 @@ class E2ELRModel(nn.Module):
             D  : (batch, 1)      total demand = pd.sum(dim=-1, keepdim=True)
             R  : (batch, 1)      reserve requirement (only for ED-R)
         Returns:
-            pg : (batch, n_gen)  feasible dispatch
+            (pg, theta) : ((batch, n_gen), (batch, n_bus))
         """
         z = self.backbone(pd)                          # (batch, n_gen) in [0, 1]
         pg = z * self.pg_max                           # enforce bounds
@@ -206,4 +247,5 @@ class E2ELRModel(nn.Module):
         if self.problem_type == "edr" and R is not None and self.reserve_repair is not None:
             pg = self.reserve_repair(pg, self.pg_max, self.r_max, R)
 
-        return pg
+        theta = compute_theta(pg, pd, self.B_pinv, self.gen_bus_idx)
+        return pg, theta

@@ -126,28 +126,43 @@ def extract_case_data(raw):
 
 
 # ---------------------------------------------------------------------------
-# 2. PTDF Matrix Computation
+# 2. B-Matrix Computation (replaces PTDF)
 # ---------------------------------------------------------------------------
 
-def _build_ptdf_internals(case):
-    """Build the shared incidence matrix, susceptance, and slack info."""
+def compute_B_matrix(case):
+    """
+    Compute the DC power flow B-matrix and all derived quantities needed
+    for neural-network training and the LP solver.
+
+    Returns a tuple:
+        B_bus         : sparse CSR (n_bus, n_bus) — full bus susceptance matrix
+        B_pinv        : ndarray (n_bus, n_bus)    — pseudoinverse; slack row/col = 0
+        b_branch      : ndarray (n_branch,)       — branch susceptances
+        B_reduced_csc : sparse CSC (n_reduced, n_reduced) — for LP equality constraints
+        F_theta       : ndarray (n_branch, n_reduced) — branch-angle sensitivity
+        C_g_r         : ndarray (n_reduced, n_gen)    — gen-bus matrix at non-slack buses
+        non_slack     : ndarray (n_reduced,) int      — non-slack bus indices
+    """
     n_bus = case["n_bus"]
     n_branch = case["n_branch"]
+    n_gen = case["n_gen"]
     branch_from = case["branch_from"]
     branch_to = case["branch_to"]
     branch_x = case["branch_x"]
     branch_tap = case["branch_tap"]
+    gen_bus_idx = case["gen_bus_idx"]
 
     b_branch = 1.0 / (branch_x * branch_tap)
 
+    # Build incidence matrix A (n_branch, n_bus) and susceptance diagonal B_diag
     row_idx = np.concatenate([np.arange(n_branch), np.arange(n_branch)])
     col_idx = np.concatenate([branch_from, branch_to])
     data = np.concatenate([np.ones(n_branch), -np.ones(n_branch)])
     A = sparse.csr_matrix((data, (row_idx, col_idx)), shape=(n_branch, n_bus))
-
     B_diag = sparse.diags(b_branch)
-    B_bus = A.T @ B_diag @ A
+    B_bus = A.T @ B_diag @ A  # (n_bus, n_bus) sparse
 
+    # Identify slack bus (type-3 reference bus; default to bus 0)
     bus_types = case.get("bus_types", None)
     slack_idx = 0
     if bus_types is not None:
@@ -157,53 +172,36 @@ def _build_ptdf_internals(case):
 
     keep = np.ones(n_bus, dtype=bool)
     keep[slack_idx] = False
-
-    return A, B_diag, B_bus, keep
-
-
-def _build_cg(case):
-    """Build generator-bus connection matrix C_g (n_bus x n_gen)."""
-    n_bus = case["n_bus"]
-    n_gen = case["n_gen"]
-    gen_bus_idx = case["gen_bus_idx"]
-    C_g = np.zeros((n_bus, n_gen))
-    np.add.at(C_g, (gen_bus_idx, np.arange(n_gen)), 1.0)
-    return C_g
-
-
-def compute_ptdf(case):
-    """
-    Compute PTDF using sparse LU factorization (fast path).
-
-    Uses scipy.sparse.linalg.splu to factor the reduced bus susceptance
-    matrix, then solves for each column via forward/back substitution.
-    This avoids the O(n^3) dense inverse and is significantly faster for
-    large cases (e.g. 1354-bus Pegase).
-
-    Returns:
-        ptdf_full : ndarray (n_branch, n_bus)  – full PTDF matrix
-        ptdf_gen  : ndarray (n_branch, n_gen)  – generator-level PTDF = ptdf_full @ C_g
-    """
-    A, B_diag, B_bus, keep = _build_ptdf_internals(case)
-    n_bus = case["n_bus"]
     non_slack = np.where(keep)[0]
     n_reduced = len(non_slack)
 
-    B_reduced = B_bus[np.ix_(keep, keep)].tocsc()
-    lu = splu(B_reduced)
+    # Reduced B matrix for LP equality constraints
+    B_reduced_csc = B_bus[np.ix_(keep, keep)].tocsc()
 
-    B_inv = lu.solve(np.eye(n_reduced))
+    # Pseudoinverse via sparse LU: solve B_reduced @ x = e_j for each column
+    lu = splu(B_reduced_csc)
+    B_inv_reduced = np.zeros((n_reduced, n_reduced))
+    I_cols = np.eye(n_reduced)
+    for j in range(n_reduced):
+        B_inv_reduced[:, j] = lu.solve(I_cols[:, j])
 
-    M = np.zeros((n_bus, n_bus))
-    M[np.ix_(non_slack, non_slack)] = B_inv
+    # Expand to full n_bus × n_bus (slack row/col remain zero)
+    B_pinv = np.zeros((n_bus, n_bus))
+    B_pinv[np.ix_(non_slack, non_slack)] = B_inv_reduced
 
-    # B_diag @ A is sparse, @ M (dense) yields dense ndarray
-    ptdf_full = np.asarray(B_diag @ A @ M)
+    # Branch-angle sensitivity matrix: F_theta[e, j'] = (B_diag @ A)[e, non_slack[j']]
+    # Used in LP thermal constraints: f = F_theta @ theta_r
+    F_theta = np.asarray((B_diag @ A)[:, keep].todense())  # (n_branch, n_reduced)
 
-    C_g = _build_cg(case)
-    ptdf_gen = ptdf_full @ C_g
+    # Generator-bus connection matrix restricted to non-slack buses
+    C_g_r = np.zeros((n_reduced, n_gen))
+    for g in range(n_gen):
+        bus = gen_bus_idx[g]
+        if keep[bus]:
+            r_idx = int(np.searchsorted(non_slack, bus))
+            C_g_r[r_idx, g] = 1.0
 
-    return ptdf_full, ptdf_gen
+    return B_bus, B_pinv, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack
 
 
 # ---------------------------------------------------------------------------
@@ -256,16 +254,20 @@ def generate_instances(case, n_instances, problem_type="ed", seed=42):
 
 
 # ---------------------------------------------------------------------------
-# 4. LP Solver — SciPy HiGHS
+# 4. LP Solver — SciPy HiGHS (explicit DC power flow via B-matrix)
 # ---------------------------------------------------------------------------
 
-def solve_ed_highs(pd_vec, case, ptdf_full, ptdf_gen, problem_type="ed",
-                   R_req=0.0, r_max=None, M_th=15.0):
+def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
+                   problem_type="ed", R_req=0.0, r_max=None, M_th=15.0):
     """
     Solve a single ED/ED-R instance using scipy.optimize.linprog with HiGHS.
 
-    This bypasses CVXPY overhead entirely and calls HiGHS directly, which is
-    substantially faster for large LP instances.
+    Uses explicit voltage-angle variables (theta_r) and DC power flow equality
+    constraints instead of the PTDF-based formulation.
+
+    Variables:
+        ED:   [pg (n_gen), xi (n_branch), theta_r (n_reduced)]
+        ED-R: [pg (n_gen), xi (n_branch), theta_r (n_reduced), r (n_gen)]
 
     Returns:
         pg_opt : (n_gen,) optimal dispatch, or None if infeasible
@@ -276,90 +278,110 @@ def solve_ed_highs(pd_vec, case, ptdf_full, ptdf_gen, problem_type="ed",
     pg_max = case["pg_max"]
     cost_coef = case["cost_coef"]
     branch_rate = case["branch_rate"]
-    D = np.sum(pd_vec)
-    b_thermal = ptdf_full @ pd_vec
+    D = float(np.sum(pd_vec))
+    n_reduced = len(non_slack)
+    pd_r = pd_vec[non_slack]  # demands at non-slack buses
+
+    # Dense B_reduced for equality constraints
+    B_reduced_dense = B_reduced_csc.toarray()  # (n_reduced, n_reduced)
 
     if problem_type == "edr" and r_max is not None:
-        # Variables: x = [pg (n_gen), xi (n_branch), r (n_gen)]
-        n_vars = n_gen + n_branch + n_gen
+        # Variables: [pg (n_gen), xi (n_branch), theta_r (n_reduced), r (n_gen)]
+        n_theta = n_gen + n_branch  # offset to theta_r block
+        n_r = n_gen + n_branch + n_reduced  # offset to r block
+        n_vars = n_gen + n_branch + n_reduced + n_gen
         c = np.zeros(n_vars)
         c[:n_gen] = cost_coef
         c[n_gen:n_gen + n_branch] = M_th
 
-        # Equality: sum(pg) = D
-        A_eq = np.zeros((1, n_vars))
-        A_eq[0, :n_gen] = 1.0
-        b_eq = np.array([D])
+        # Equalities: (1) power balance, (2) DC power flow
+        n_eq = 1 + n_reduced
+        A_eq = np.zeros((n_eq, n_vars))
+        b_eq = np.zeros(n_eq)
 
-        # Inequality (Ax <= b):
-        # 1) ptdf_gen @ pg - xi <= branch_rate + b_thermal
-        # 2) -ptdf_gen @ pg - xi <= branch_rate - b_thermal
-        # 3) -sum(r) <= -R_req
-        # 4) pg + r <= pg_max
-        # 5) r <= r_max
+        # (1) sum(pg) = D
+        A_eq[0, :n_gen] = 1.0
+        b_eq[0] = D
+
+        # (2) B_reduced @ theta_r - C_g_r @ pg = -pd_r
+        A_eq[1:, :n_gen] = -C_g_r
+        A_eq[1:, n_theta:n_theta + n_reduced] = B_reduced_dense
+        b_eq[1:] = -pd_r
+
+        # Inequalities:
+        # (a) F_theta @ theta_r - xi <= rate  (upper thermal)
+        # (b) -F_theta @ theta_r - xi <= rate (lower thermal)
+        # (c) -sum(r) <= -R_req
+        # (d) pg + r <= pg_max
+        # (e) r <= r_max
         n_ineq = 2 * n_branch + 1 + n_gen + n_gen
         A_ub = np.zeros((n_ineq, n_vars))
         b_ub = np.zeros(n_ineq)
         row = 0
 
-        # Upper thermal
-        A_ub[row:row + n_branch, :n_gen] = ptdf_gen
         A_ub[row:row + n_branch, n_gen:n_gen + n_branch] = -np.eye(n_branch)
-        b_ub[row:row + n_branch] = branch_rate + b_thermal
+        A_ub[row:row + n_branch, n_theta:n_theta + n_reduced] = F_theta
+        b_ub[row:row + n_branch] = branch_rate
         row += n_branch
 
-        # Lower thermal
-        A_ub[row:row + n_branch, :n_gen] = -ptdf_gen
         A_ub[row:row + n_branch, n_gen:n_gen + n_branch] = -np.eye(n_branch)
-        b_ub[row:row + n_branch] = branch_rate - b_thermal
+        A_ub[row:row + n_branch, n_theta:n_theta + n_reduced] = -F_theta
+        b_ub[row:row + n_branch] = branch_rate
         row += n_branch
 
-        # Reserve requirement: -sum(r) <= -R_req
-        A_ub[row, n_gen + n_branch:] = -1.0
+        A_ub[row, n_r:] = -1.0
         b_ub[row] = -R_req
         row += 1
 
-        # pg + r <= pg_max
         A_ub[row:row + n_gen, :n_gen] = np.eye(n_gen)
-        A_ub[row:row + n_gen, n_gen + n_branch:] = np.eye(n_gen)
+        A_ub[row:row + n_gen, n_r:] = np.eye(n_gen)
         b_ub[row:row + n_gen] = pg_max
         row += n_gen
 
-        # r <= r_max
-        A_ub[row:row + n_gen, n_gen + n_branch:] = np.eye(n_gen)
+        A_ub[row:row + n_gen, n_r:] = np.eye(n_gen)
         b_ub[row:row + n_gen] = r_max
-        row += n_gen
 
         bounds = (
             [(0, pg_max[i]) for i in range(n_gen)]
             + [(0, None) for _ in range(n_branch)]
+            + [(None, None) for _ in range(n_reduced)]
             + [(0, r_max[i]) for i in range(n_gen)]
         )
     else:
-        # Variables: x = [pg (n_gen), xi (n_branch)]
-        n_vars = n_gen + n_branch
+        # Variables: [pg (n_gen), xi (n_branch), theta_r (n_reduced)]
+        n_theta = n_gen + n_branch
+        n_vars = n_gen + n_branch + n_reduced
         c = np.zeros(n_vars)
         c[:n_gen] = cost_coef
-        c[n_gen:] = M_th
+        c[n_gen:n_gen + n_branch] = M_th
 
-        A_eq = np.zeros((1, n_vars))
+        n_eq = 1 + n_reduced
+        A_eq = np.zeros((n_eq, n_vars))
+        b_eq = np.zeros(n_eq)
+
         A_eq[0, :n_gen] = 1.0
-        b_eq = np.array([D])
+        b_eq[0] = D
 
-        A_ub = np.zeros((2 * n_branch, n_vars))
-        b_ub = np.zeros(2 * n_branch)
+        A_eq[1:, :n_gen] = -C_g_r
+        A_eq[1:, n_theta:] = B_reduced_dense
+        b_eq[1:] = -pd_r
 
-        A_ub[:n_branch, :n_gen] = ptdf_gen
-        A_ub[:n_branch, n_gen:] = -np.eye(n_branch)
-        b_ub[:n_branch] = branch_rate + b_thermal
+        n_ineq = 2 * n_branch
+        A_ub = np.zeros((n_ineq, n_vars))
+        b_ub = np.zeros(n_ineq)
 
-        A_ub[n_branch:, :n_gen] = -ptdf_gen
-        A_ub[n_branch:, n_gen:] = -np.eye(n_branch)
-        b_ub[n_branch:] = branch_rate - b_thermal
+        A_ub[:n_branch, n_gen:n_gen + n_branch] = -np.eye(n_branch)
+        A_ub[:n_branch, n_theta:] = F_theta
+        b_ub[:n_branch] = branch_rate
+
+        A_ub[n_branch:, n_gen:n_gen + n_branch] = -np.eye(n_branch)
+        A_ub[n_branch:, n_theta:] = -F_theta
+        b_ub[n_branch:] = branch_rate
 
         bounds = (
             [(0, pg_max[i]) for i in range(n_gen)]
             + [(0, None) for _ in range(n_branch)]
+            + [(None, None) for _ in range(n_reduced)]
         )
 
     result = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
@@ -376,15 +398,16 @@ def solve_ed_highs(pd_vec, case, ptdf_full, ptdf_gen, problem_type="ed",
 
 def _solve_one_highs(args):
     """Worker function for multiprocessing (must be at module level)."""
-    i, pd_vec, case, ptdf_full, ptdf_gen, problem_type, R_req, r_max, M_th = args
+    i, pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack, \
+        problem_type, R_req, r_max, M_th = args
     return solve_ed_highs(
-        pd_vec, case, ptdf_full, ptdf_gen,
+        pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
         problem_type=problem_type, R_req=R_req, r_max=r_max, M_th=M_th,
     )
 
 
-def solve_all_instances(instances, case, ptdf_full, ptdf_gen, problem_type="ed",
-                        M_th=15.0, verbose=True, n_workers=4):
+def solve_all_instances(instances, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
+                        problem_type="ed", M_th=15.0, verbose=True, n_workers=4):
     """
     Solve all instances in parallel using HiGHS and return optimal dispatches
     and objective values.
@@ -404,13 +427,13 @@ def solve_all_instances(instances, case, ptdf_full, ptdf_gen, problem_type="ed",
     n_instances = len(pd_all)
     n_gen = case["n_gen"]
 
-    pg_star = np.full((n_instances, n_gen), np.nan)
-    obj_star = np.full(n_instances, np.nan)
+    pg_star = np.zeros((n_instances, n_gen))
+    obj_star = np.zeros(n_instances)
     n_failed = 0
 
     r_max_arg = r_max if problem_type == "edr" else None
     work_items = [
-        (i, pd_all[i], case, ptdf_full, ptdf_gen,
+        (i, pd_all[i], case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
          problem_type, R_all[i], r_max_arg, M_th)
         for i in range(n_instances)
     ]
@@ -428,6 +451,8 @@ def solve_all_instances(instances, case, ptdf_full, ptdf_gen, problem_type="ed",
             obj_star[i] = obj
         else:
             n_failed += 1
+            pg_star[i] = np.nan
+            obj_star[i] = np.nan
 
     if verbose:
         print(f"  Done. {n_failed}/{n_instances} infeasible instances.")
@@ -468,11 +493,12 @@ if __name__ == "__main__":
     print(f"  Buses: {case['n_bus']}, Generators: {case['n_gen']}, "
           f"Branches: {case['n_branch']}")
 
-    # 2. Compute PTDF
-    print("Computing PTDF matrix...")
+    # 2. Compute B-matrix
+    print("Computing B-matrix...")
     t0 = time.time()
-    ptdf_full, ptdf_gen = compute_ptdf(case)
-    print(f"  PTDF done in {time.time() - t0:.2f}s")
+    B_bus, B_pinv, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack = compute_B_matrix(case)
+    print(f"  B-matrix done in {time.time() - t0:.2f}s  "
+          f"(B_pinv shape: {B_pinv.shape})")
 
     # 3. Generate instances
     print(f"Generating {args.n_instances} {args.problem.upper()} instances "
@@ -488,7 +514,7 @@ if __name__ == "__main__":
     print(f"Solving with HiGHS ({args.n_workers} workers)...")
     t0 = time.time()
     pg_star, obj_star = solve_all_instances(
-        instances, case, ptdf_full, ptdf_gen,
+        instances, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
         problem_type=args.problem, M_th=args.M_th,
         verbose=True, n_workers=args.n_workers,
     )
