@@ -1,6 +1,6 @@
 """
 Data utilities for E2ELR: MATPOWER parsing, PTDF computation,
-instance generation, and LP solving via CVXPY / SciPy HiGHS.
+instance generation, and LP solving via SciPy HiGHS.
 
 Reference: "End-to-End Feasible Optimization Proxies for Large-Scale
 Economic Dispatch" (arXiv 2304.11726v2)
@@ -11,7 +11,6 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import splu
 from scipy.optimize import linprog
-import cvxpy as cp
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +167,7 @@ def _build_cg(case):
     n_gen = case["n_gen"]
     gen_bus_idx = case["gen_bus_idx"]
     C_g = np.zeros((n_bus, n_gen))
-    for g in range(n_gen):
-        C_g[gen_bus_idx[g], g] += 1.0
+    np.add.at(C_g, (gen_bus_idx, np.arange(n_gen)), 1.0)
     return C_g
 
 
@@ -186,50 +184,21 @@ def compute_ptdf(case):
         ptdf_full : ndarray (n_branch, n_bus)  – full PTDF matrix
         ptdf_gen  : ndarray (n_branch, n_gen)  – generator-level PTDF = ptdf_full @ C_g
     """
-    n_bus = case["n_bus"]
     A, B_diag, B_bus, keep = _build_ptdf_internals(case)
+    n_bus = case["n_bus"]
     non_slack = np.where(keep)[0]
     n_reduced = len(non_slack)
 
     B_reduced = B_bus[np.ix_(keep, keep)].tocsc()
     lu = splu(B_reduced)
 
-    B_inv = np.zeros((n_reduced, n_reduced))
-    I_cols = np.eye(n_reduced)
-    for j in range(n_reduced):
-        B_inv[:, j] = lu.solve(I_cols[:, j])
+    B_inv = lu.solve(np.eye(n_reduced))
 
     M = np.zeros((n_bus, n_bus))
     M[np.ix_(non_slack, non_slack)] = B_inv
 
     # B_diag @ A is sparse, @ M (dense) yields dense ndarray
     ptdf_full = np.asarray(B_diag @ A @ M)
-
-    C_g = _build_cg(case)
-    ptdf_gen = ptdf_full @ C_g
-
-    return ptdf_full, ptdf_gen
-
-
-def compute_ptdf_dense(case):
-    """
-    Original PTDF computation using dense np.linalg.inv (kept for reference).
-
-    Returns:
-        ptdf_full : ndarray (n_branch, n_bus)
-        ptdf_gen  : ndarray (n_branch, n_gen)
-    """
-    n_bus = case["n_bus"]
-    A, B_diag, B_bus, keep = _build_ptdf_internals(case)
-    non_slack = np.where(keep)[0]
-
-    B_reduced_dense = B_bus[np.ix_(keep, keep)].toarray()
-    B_inv = np.linalg.inv(B_reduced_dense)
-
-    M = np.zeros((n_bus, n_bus))
-    M[np.ix_(non_slack, non_slack)] = B_inv
-
-    ptdf_full = B_diag @ A @ M
 
     C_g = _build_cg(case)
     ptdf_gen = ptdf_full @ C_g
@@ -287,142 +256,7 @@ def generate_instances(case, n_instances, problem_type="ed", seed=42):
 
 
 # ---------------------------------------------------------------------------
-# 4. LP Solver — Original CVXPY (kept for reference / comparison)
-# ---------------------------------------------------------------------------
-
-def solve_ed_instance(pd_vec, case, ptdf_full, ptdf_gen, problem_type="ed",
-                      R_req=0.0, r_max=None, M_th=15.0):
-    """
-    Solve a single ED or ED-R instance using CVXPY (original, slower path).
-
-    Args:
-        pd_vec   : (n_bus,) demand vector in p.u.
-        case     : case data dict
-        ptdf_full: (n_branch, n_bus) full PTDF matrix
-        ptdf_gen : (n_branch, n_gen) generator-level PTDF
-        problem_type: "ed" or "edr"
-        R_req    : scalar reserve requirement
-        r_max    : (n_gen,) max reserve per generator
-        M_th     : thermal penalty cost in $/p.u.
-
-    Returns:
-        pg_opt : (n_gen,) optimal dispatch, or None if infeasible
-        obj    : optimal objective value, or None
-    """
-    n_gen = case["n_gen"]
-    n_branch = case["n_branch"]
-    pg_max = case["pg_max"]
-    cost_coef = case["cost_coef"]
-    branch_rate = case["branch_rate"]
-    D = np.sum(pd_vec)
-
-    b_thermal = ptdf_full @ pd_vec
-
-    pg = cp.Variable(n_gen, nonneg=True)
-    xi = cp.Variable(n_branch, nonneg=True)
-
-    objective = cp.Minimize(cost_coef @ pg + M_th * cp.sum(xi))
-
-    constraints = [
-        cp.sum(pg) == D,
-        pg <= pg_max,
-        ptdf_gen @ pg - b_thermal <= branch_rate + xi,
-        -(ptdf_gen @ pg - b_thermal) <= branch_rate + xi,
-    ]
-
-    if problem_type == "edr" and r_max is not None:
-        r = cp.Variable(n_gen, nonneg=True)
-        constraints += [
-            cp.sum(r) >= R_req,
-            pg + r <= pg_max,
-            r <= r_max,
-        ]
-
-    prob = cp.Problem(objective, constraints)
-    try:
-        prob.solve(solver=cp.CLARABEL, verbose=False)
-        if prob.status in ("optimal", "optimal_inaccurate"):
-            return pg.value, prob.value
-    except cp.SolverError:
-        pass
-
-    return None, None
-
-
-# ---------------------------------------------------------------------------
-# 4b. LP Solver — Parametric CVXPY (compile once, solve many)
-# ---------------------------------------------------------------------------
-
-def build_ed_parametric(case, ptdf_full, ptdf_gen, problem_type="ed",
-                        M_th=15.0):
-    """
-    Build a parametric CVXPY problem that can be solved repeatedly with
-    different demand vectors without re-canonicalization overhead.
-
-    Returns a dict with the problem object and parameter handles.
-    """
-    n_gen = case["n_gen"]
-    n_branch = case["n_branch"]
-    pg_max_val = case["pg_max"]
-    cost_coef_val = case["cost_coef"]
-    branch_rate_val = case["branch_rate"]
-
-    pd_param = cp.Parameter(case["n_bus"])
-    D_param = cp.Parameter()
-
-    pg = cp.Variable(n_gen, nonneg=True)
-    xi = cp.Variable(n_branch, nonneg=True)
-
-    b_thermal = ptdf_full @ pd_param
-
-    objective = cp.Minimize(cost_coef_val @ pg + M_th * cp.sum(xi))
-
-    constraints = [
-        cp.sum(pg) == D_param,
-        pg <= pg_max_val,
-        ptdf_gen @ pg - b_thermal <= branch_rate_val + xi,
-        -(ptdf_gen @ pg - b_thermal) <= branch_rate_val + xi,
-    ]
-
-    r_var = None
-    R_param = None
-    if problem_type == "edr":
-        r_var = cp.Variable(n_gen, nonneg=True)
-        R_param = cp.Parameter()
-        r_max_val = case.get("r_max", np.zeros(n_gen))
-        constraints += [
-            cp.sum(r_var) >= R_param,
-            pg + r_var <= pg_max_val,
-            r_var <= r_max_val,
-        ]
-
-    prob = cp.Problem(objective, constraints)
-
-    return {
-        "prob": prob, "pg": pg, "xi": xi,
-        "pd_param": pd_param, "D_param": D_param,
-        "R_param": R_param, "r_var": r_var,
-    }
-
-
-def solve_ed_parametric(pdata, pd_vec, R_req=0.0):
-    """Solve using a pre-built parametric CVXPY problem (no re-canonicalization)."""
-    pdata["pd_param"].value = pd_vec
-    pdata["D_param"].value = np.sum(pd_vec)
-    if pdata["R_param"] is not None:
-        pdata["R_param"].value = R_req
-
-    try:
-        pdata["prob"].solve(solver=cp.CLARABEL, verbose=False, warm_start=True)
-        if pdata["prob"].status in ("optimal", "optimal_inaccurate"):
-            return pdata["pg"].value, pdata["prob"].value
-    except cp.SolverError:
-        pass
-    return None, None
-
-
-# ---------------------------------------------------------------------------
-# 4c. LP Solver — SciPy HiGHS (fastest single-threaded path)
+# 4. LP Solver — SciPy HiGHS
 # ---------------------------------------------------------------------------
 
 def solve_ed_highs(pd_vec, case, ptdf_full, ptdf_gen, problem_type="ed",
@@ -550,104 +384,53 @@ def _solve_one_highs(args):
 
 
 def solve_all_instances(instances, case, ptdf_full, ptdf_gen, problem_type="ed",
-                        M_th=15.0, verbose=True, solver="highs", n_workers=4):
+                        M_th=15.0, verbose=True, n_workers=4):
     """
-    Solve all instances and return optimal dispatches and objective values.
+    Solve all instances in parallel using HiGHS and return optimal dispatches
+    and objective values.
 
     Args:
-        solver    : "highs" (fast, default), "cvxpy" (original), or "cvxpy_param"
-        n_workers : number of parallel workers (only used with solver="highs")
+        n_workers : number of parallel workers
 
     Returns:
         pg_star : (n_instances, n_gen) optimal dispatches
         obj_star: (n_instances,) optimal objective values
     """
+    from multiprocessing import Pool
+
     pd_all = instances["pd"]
     R_all = instances["R_req"]
     r_max = instances["r_max"]
     n_instances = len(pd_all)
     n_gen = case["n_gen"]
 
-    pg_star = np.zeros((n_instances, n_gen))
-    obj_star = np.zeros(n_instances)
+    pg_star = np.full((n_instances, n_gen), np.nan)
+    obj_star = np.full(n_instances, np.nan)
     n_failed = 0
 
-    # --- Parallel HiGHS path ---
-    if solver == "highs" and n_workers > 1:
-        from multiprocessing import Pool
+    r_max_arg = r_max if problem_type == "edr" else None
+    work_items = [
+        (i, pd_all[i], case, ptdf_full, ptdf_gen,
+         problem_type, R_all[i], r_max_arg, M_th)
+        for i in range(n_instances)
+    ]
 
-        r_max_arg = r_max if problem_type == "edr" else None
-        work_items = [
-            (i, pd_all[i], case, ptdf_full, ptdf_gen,
-             problem_type, R_all[i], r_max_arg, M_th)
-            for i in range(n_instances)
-        ]
+    if verbose:
+        print(f"  Solving {n_instances} instances with HiGHS "
+              f"({n_workers} workers)...")
 
-        if verbose:
-            print(f"  Solving {n_instances} instances with HiGHS "
-                  f"({n_workers} workers)...")
+    with Pool(n_workers) as pool:
+        results = pool.map(_solve_one_highs, work_items)
 
-        with Pool(n_workers) as pool:
-            results = pool.map(_solve_one_highs, work_items)
-
-        for i, (pg_opt, obj) in enumerate(results):
-            if pg_opt is not None:
-                pg_star[i] = pg_opt
-                obj_star[i] = obj
-            else:
-                n_failed += 1
-                pg_star[i] = np.nan
-                obj_star[i] = np.nan
-
-        if verbose:
-            print(f"  Done. {n_failed}/{n_instances} infeasible instances.")
-        return pg_star, obj_star
-
-    # --- Parametric CVXPY path ---
-    if solver == "cvxpy_param":
-        pdata = build_ed_parametric(case, ptdf_full, ptdf_gen,
-                                    problem_type=problem_type, M_th=M_th)
-        for i in range(n_instances):
-            pg_opt, obj = solve_ed_parametric(pdata, pd_all[i], R_req=R_all[i])
-            if pg_opt is not None:
-                pg_star[i] = pg_opt
-                obj_star[i] = obj
-            else:
-                n_failed += 1
-                pg_star[i] = np.nan
-                obj_star[i] = np.nan
-
-            if verbose and (i + 1) % 500 == 0:
-                print(f"  Solved {i + 1}/{n_instances} instances ({n_failed} failed)")
-
-        if verbose:
-            print(f"  Done. {n_failed}/{n_instances} infeasible instances.")
-        return pg_star, obj_star
-
-    # --- Sequential solve (HiGHS or original CVXPY) ---
-    solve_fn = solve_ed_highs if solver == "highs" else solve_ed_instance
-    for i in range(n_instances):
-        pg_opt, obj = solve_fn(
-            pd_all[i], case, ptdf_full, ptdf_gen,
-            problem_type=problem_type,
-            R_req=R_all[i],
-            r_max=r_max if problem_type == "edr" else None,
-            M_th=M_th,
-        )
+    for i, (pg_opt, obj) in enumerate(results):
         if pg_opt is not None:
             pg_star[i] = pg_opt
             obj_star[i] = obj
         else:
             n_failed += 1
-            pg_star[i] = np.nan
-            obj_star[i] = np.nan
-
-        if verbose and (i + 1) % 500 == 0:
-            print(f"  Solved {i + 1}/{n_instances} instances ({n_failed} failed)")
 
     if verbose:
         print(f"  Done. {n_failed}/{n_instances} infeasible instances.")
-
     return pg_star, obj_star
 
 
@@ -672,11 +455,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints",
                         help="Directory for saving ground truth solutions")
-    parser.add_argument("--solver", type=str, default="highs",
-                        choices=["highs", "cvxpy", "cvxpy_param"],
-                        help="LP solver backend")
     parser.add_argument("--n_workers", type=int, default=4,
-                        help="Number of parallel workers (HiGHS only)")
+                        help="Number of parallel workers")
     parser.add_argument("--M_th", type=float, default=15.0,
                         help="Thermal penalty cost ($/p.u.)")
     args = parser.parse_args()
@@ -705,12 +485,12 @@ if __name__ == "__main__":
         print(f"  alpha_r = {alpha_r:.4f}")
 
     # 4. Solve all instances
-    print(f"Solving with {args.solver} (workers={args.n_workers})...")
+    print(f"Solving with HiGHS ({args.n_workers} workers)...")
     t0 = time.time()
     pg_star, obj_star = solve_all_instances(
         instances, case, ptdf_full, ptdf_gen,
         problem_type=args.problem, M_th=args.M_th,
-        verbose=True, solver=args.solver, n_workers=args.n_workers,
+        verbose=True, n_workers=args.n_workers,
     )
     elapsed = time.time() - t0
     print(f"  Solving done in {elapsed / 60:.1f} min")

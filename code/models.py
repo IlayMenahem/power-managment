@@ -42,7 +42,7 @@ class PowerBalanceRepair(nn.Module):
         """
         total_gen = pg.sum(dim=-1, keepdim=True)        # (batch, 1)
         total_max = pg_max.sum(dim=-1, keepdim=True) if pg_max.dim() > 1 \
-            else pg_max.sum().unsqueeze(0).unsqueeze(0)  # scalar -> (1, 1)
+            else pg_max.sum().view(1, 1)                 # (n_gen,) -> (1, 1)
 
         # Shortage: need to increase generation
         eta_up = (D - total_gen) / (total_max - total_gen + EPS)

@@ -25,7 +25,7 @@ from train import (
 )
 
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="E2ELR: Economic Dispatch Optimization Proxy")
 
     # Data and problem
@@ -264,6 +264,3 @@ def main():
 
     print("\nDone.")
 
-
-if __name__ == "__main__":
-    main()

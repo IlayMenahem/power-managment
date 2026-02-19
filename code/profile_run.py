@@ -257,11 +257,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Profile E2ELR data pipeline")
     parser.add_argument("--n_instances", type=int, default=100,
                         help="Number of instances to profile (default: 100)")
-    parser.add_argument("--full_cprofile", action="store_true",
-                        help="Include detailed cProfile output")
     args = parser.parse_args()
 
-    if args.full_cprofile:
-        run_cprofile(args.n_instances)
-    else:
-        run_profile(args.n_instances)
+    run_profile(args.n_instances)
