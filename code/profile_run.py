@@ -209,7 +209,7 @@ def print_summary(timings, n_instances):
     scale = 5000 / n_instances
     ext_orig = timings["parse"] + timings["ptdf_dense"] + timings["gen"] + timings["cvxpy_orig"] * scale
     ext_fast = timings["parse"] + timings["ptdf_sparse"] + timings["gen"] + timings["highs_seq"] * scale
-    print(f"\n  Extrapolated to 5000 instances:")
+    print("\n  Extrapolated to 5000 instances:")
     print(f"    Original: ~{ext_orig / 60:.1f} min")
     print(f"    Optimized (seq): ~{ext_fast / 60:.1f} min")
     if "highs_par" in timings:

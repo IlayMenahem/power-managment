@@ -649,3 +649,84 @@ def solve_all_instances(instances, case, ptdf_full, ptdf_gen, problem_type="ed",
         print(f"  Done. {n_failed}/{n_instances} infeasible instances.")
 
     return pg_star, obj_star
+
+
+# ---------------------------------------------------------------------------
+# Main: generate dataset and save to checkpoint folder
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import os
+    import time
+
+    parser = argparse.ArgumentParser(
+        description="Generate ED/ED-R dataset and save ground truth to checkpoints."
+    )
+    parser.add_argument("--case", type=str, default="data/pglib_opf_case300_ieee.m",
+                        help="Path to MATPOWER .m case file")
+    parser.add_argument("--problem", type=str, default="ed", choices=["ed", "edr"],
+                        help="Problem type: ed (no reserves) or edr (with reserves)")
+    parser.add_argument("--n_instances", type=int, default=50000,
+                        help="Total number of instances to generate")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints",
+                        help="Directory for saving ground truth solutions")
+    parser.add_argument("--solver", type=str, default="highs",
+                        choices=["highs", "cvxpy", "cvxpy_param"],
+                        help="LP solver backend")
+    parser.add_argument("--n_workers", type=int, default=4,
+                        help="Number of parallel workers (HiGHS only)")
+    parser.add_argument("--M_th", type=float, default=15.0,
+                        help="Thermal penalty cost ($/p.u.)")
+    args = parser.parse_args()
+
+    # 1. Load case
+    print(f"Loading case: {args.case}")
+    raw = parse_matpower(args.case)
+    case = extract_case_data(raw)
+    print(f"  Buses: {case['n_bus']}, Generators: {case['n_gen']}, "
+          f"Branches: {case['n_branch']}")
+
+    # 2. Compute PTDF
+    print("Computing PTDF matrix...")
+    t0 = time.time()
+    ptdf_full, ptdf_gen = compute_ptdf(case)
+    print(f"  PTDF done in {time.time() - t0:.2f}s")
+
+    # 3. Generate instances
+    print(f"Generating {args.n_instances} {args.problem.upper()} instances "
+          f"(seed={args.seed})...")
+    instances = generate_instances(case, args.n_instances, args.problem, seed=args.seed)
+
+    if args.problem == "edr":
+        alpha_r, r_max = compute_reserve_params(case)
+        instances["r_max"] = r_max
+        print(f"  alpha_r = {alpha_r:.4f}")
+
+    # 4. Solve all instances
+    print(f"Solving with {args.solver} (workers={args.n_workers})...")
+    t0 = time.time()
+    pg_star, obj_star = solve_all_instances(
+        instances, case, ptdf_full, ptdf_gen,
+        problem_type=args.problem, M_th=args.M_th,
+        verbose=True, solver=args.solver, n_workers=args.n_workers,
+    )
+    elapsed = time.time() - t0
+    print(f"  Solving done in {elapsed / 60:.1f} min")
+
+    valid = ~np.isnan(obj_star)
+    print(f"  Valid solutions: {valid.sum()}/{len(obj_star)}")
+    if valid.any():
+        print(f"  Objective range: [{obj_star[valid].min():.2f}, "
+              f"{obj_star[valid].max():.2f}]")
+
+    # 5. Save checkpoint
+    case_name = os.path.splitext(os.path.basename(args.case))[0]
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(
+        args.checkpoint_dir,
+        f"gt_{case_name}_{args.problem}_n{args.n_instances}_s{args.seed}.npz",
+    )
+    np.savez(checkpoint_path, pg_star=pg_star, obj_star=obj_star)
+    print(f"  Saved to: {checkpoint_path}")

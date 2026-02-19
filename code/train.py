@@ -14,7 +14,6 @@ Economic Dispatch" (arXiv 2304.11726v2), Sections IV-V.
 import time
 import numpy as np
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 
@@ -23,9 +22,9 @@ from torch.utils.data import DataLoader, TensorDataset
 # ---------------------------------------------------------------------------
 
 # MISO-based penalty prices (Section V-C), converted to $/p.u. with baseMVA=100
-M_TH = 15.0    # thermal violation: 1500 $/MW -> 15 $/p.u.
-M_PB = 35.0    # power balance: 3500 $/MW -> 35 $/p.u.
-M_RES = 11.0   # reserve shortage: 1100 $/MW -> 11 $/p.u.
+M_TH = 1500.0    # thermal violation: 1500 $/MW -> 15 $/p.u.
+M_PB = 3500.0    # power balance: 3500 $/MW -> 35 $/p.u.
+M_RES = 1100.0   # reserve shortage: 1100 $/MW -> 11 $/p.u.
 
 
 def compute_thermal_violations(pg, pd, ptdf_gen, ptdf_full, branch_rate):

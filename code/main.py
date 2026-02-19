@@ -33,7 +33,7 @@ def main():
                         help="Path to MATPOWER .m case file")
     parser.add_argument("--problem", type=str, default="ed", choices=["ed", "edr"],
                         help="Problem type: ed (no reserves) or edr (with reserves)")
-    parser.add_argument("--n_instances", type=int, default=5000,
+    parser.add_argument("--n_instances", type=int, default=50000,
                         help="Total number of instances to generate")
 
     # Model
@@ -102,7 +102,7 @@ def main():
     # -----------------------------------------------------------------------
     # 2. Compute PTDF matrix
     # -----------------------------------------------------------------------
-    print(f"\nComputing PTDF matrix...")
+    print("\nComputing PTDF matrix...")
     t0 = time.time()
     ptdf_full, ptdf_gen = compute_ptdf(case)
     print(f"  PTDF shape: ({ptdf_full.shape[0]}, {ptdf_full.shape[1]}) — done in {time.time()-t0:.2f}s")
@@ -141,7 +141,7 @@ def main():
             obj_star = gt_data["obj_star"]
             print(f"  Loaded pg_star {pg_star.shape}, obj_star {obj_star.shape}")
         else:
-            print(f"\nSolving instances with CVXPY...")
+            print("\nSolving instances with CVXPY...")
             t0 = time.time()
             pg_star, obj_star = solve_all_instances(
                 instances, case, ptdf_full, ptdf_gen,
@@ -165,7 +165,7 @@ def main():
     # -----------------------------------------------------------------------
     # 5. Build datasets
     # -----------------------------------------------------------------------
-    print(f"\nBuilding datasets...")
+    print("\nBuilding datasets...")
     datasets = build_datasets(instances, pg_star, obj_star, case, args.problem, device=device)
     for name, ds in datasets.items():
         print(f"  {name}: {len(ds)} instances")
@@ -242,7 +242,7 @@ def main():
     # -----------------------------------------------------------------------
     if obj_star is not None:
         print(f"\n{'='*60}")
-        print(f"Evaluating on test set")
+        print("Evaluating on test set")
         print(f"{'='*60}")
 
         results = evaluate_model(
