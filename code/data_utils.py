@@ -12,6 +12,7 @@ from scipy import sparse
 from scipy.sparse.linalg import splu
 from scipy.optimize import linprog
 
+from train import M_TH
 
 # ---------------------------------------------------------------------------
 # 1. MATPOWER Parser
@@ -482,8 +483,6 @@ if __name__ == "__main__":
                         help="Directory for saving ground truth solutions")
     parser.add_argument("--n_workers", type=int, default=4,
                         help="Number of parallel workers")
-    parser.add_argument("--M_th", type=float, default=15.0,
-                        help="Thermal penalty cost ($/p.u.)")
     args = parser.parse_args()
 
     # 1. Load case
@@ -515,7 +514,7 @@ if __name__ == "__main__":
     t0 = time.time()
     pg_star, obj_star = solve_all_instances(
         instances, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-        problem_type=args.problem, M_th=args.M_th,
+        problem_type=args.problem, M_th=M_TH,
         verbose=True, n_workers=args.n_workers,
     )
     elapsed = time.time() - t0

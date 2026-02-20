@@ -306,11 +306,13 @@ class DCPowerFlowLayer(nn.Module):
 class E2ELRDCModel(nn.Module):
     """
     E2ELR with DC power flow repair layer (proposed extension).
-    We add a layer that finds the closest to the network output theta satisfying the DC power flow equations
+    We add a layer that finds the closest to the network output theta satisfying the DC power flow equations.
+    Optionally, theta can be computed directly via compute_theta (minimum-norm solution)
+    instead of projecting the backbone output.
     Returns (pg, theta).
     """
 
-    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, problem_type="ed", r_max=None, B=None, gen_bus_idx=None):
+    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, problem_type="ed", r_max=None, B=None, gen_bus_idx=None, use_compute_theta=False):
         super().__init__()
         self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
                                     hidden_dim=hidden_dim, n_layers=n_layers)
@@ -318,6 +320,7 @@ class E2ELRDCModel(nn.Module):
         self.power_balance = PowerBalanceRepair()
         self.DC_power_flow = DCPowerFlowLayer(B, gen_bus_idx)
         self.problem_type = problem_type
+        self.use_compute_theta = use_compute_theta
 
         if problem_type == "edr" and r_max is not None:
             self.register_buffer("r_max", torch.tensor(r_max, dtype=torch.float32))
@@ -343,6 +346,9 @@ class E2ELRDCModel(nn.Module):
         if self.problem_type == "edr" and R is not None and self.reserve_repair is not None:
             pg = self.reserve_repair(pg, self.pg_max, self.r_max, R)
 
-        theta = self.DC_power_flow(pg, pd, theta)     # enforce DC power flow equations
+        if self.use_compute_theta:
+            theta = compute_theta(pg, pd, self.DC_power_flow.B_pinv_t, self.DC_power_flow.gen_bus_idx_t)
+        else:
+            theta = self.DC_power_flow(pg, pd, theta)  # enforce DC power flow equations
 
         return pg, theta

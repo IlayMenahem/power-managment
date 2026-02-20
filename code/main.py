@@ -219,12 +219,10 @@ if __name__ == "__main__":
     if args.lam is not None:
         lam = args.lam
     else:
-        if args.model == "e2elr":
-            lam = 0.0  # feasible model, no constraint penalty
-        elif args.mode == "ssl":
-            lam = 0.1  # default for DNN SSL
+        if args.mode == "ssl":
+            lam = 0.1
         else:
-            lam = 1e-4  # default for DNN SL
+            lam = 1e-4
     mu = lam  # mu = lambda for SL (per paper)
 
     print(f"\nTraining: mode={args.mode.upper()}, lambda={lam}, mu={mu}")
@@ -236,7 +234,7 @@ if __name__ == "__main__":
     print(f"Training {args.model.upper()} with {args.mode.upper()}")
     print(f"{'='*60}")
 
-    history = train_model(
+    model, history = train_model(
         model, datasets, case, args.problem, mode=args.mode,
         lam=lam, mu=mu,
         b_branch_t=b_branch_t, branch_from=branch_from, branch_to=branch_to,

@@ -118,8 +118,12 @@ def loss_sl(pg_hat, theta, pg_star, pd, D, cost_coef, pg_max, r_max, R,
     """
     n_gen = pg_hat.shape[1]
 
-    # MAE on dispatch
-    mae = (pg_hat - pg_star).abs().sum(dim=-1).mean() / n_gen
+    # MAE on dispatch — skip instances where pg_star contains NaN (infeasible LP)
+    valid_sl = ~torch.isnan(pg_star).any(dim=-1)  # (batch,)
+    if valid_sl.any():
+        mae = (pg_hat[valid_sl] - pg_star[valid_sl]).abs().sum(dim=-1).mean() / n_gen
+    else:
+        mae = torch.tensor(0.0, device=pg_hat.device, dtype=pg_hat.dtype)
 
     # Thermal violations (from explicit theta)
     xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
@@ -296,6 +300,7 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
 
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_losses.append(loss.item())
 
@@ -365,7 +370,7 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
 
     history["best_val_loss"] = best_val_loss
     history["training_time_min"] = elapsed_min
-    return history
+    return model, history
 
 
 # ---------------------------------------------------------------------------
