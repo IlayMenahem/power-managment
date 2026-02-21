@@ -126,12 +126,14 @@ def run_trial(
     lam = config["lam"]
 
     def epoch_callback(epoch, train_loss, val_loss, elapsed_min):
-        report({
-            "epoch": epoch,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "training_time_min": elapsed_min,
-        })
+        report(
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "training_time_min": elapsed_min,
+            }
+        )
 
     _, history = train_model(
         model,

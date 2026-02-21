@@ -12,23 +12,25 @@ Economic Dispatch" (arXiv 2304.11726v2), Sections IV-V.
 """
 
 import time
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
-
 
 # ---------------------------------------------------------------------------
 # Penalty / violation helpers
 # ---------------------------------------------------------------------------
 
 # MISO-based penalty prices (Section V-C).
-M_TH = 1500.0    # thermal violation: 1500 $/MW
-M_PB = 3500.0    # power balance: 3500 $/MW
-M_RES = 1100.0   # reserve shortage: 1100 $/MW
-M_DC = 3500.0    # DC power flow residual: 3500 $/MW
+M_TH = 1500.0  # thermal violation: 1500 $/MW
+M_PB = 3500.0  # power balance: 3500 $/MW
+M_RES = 1100.0  # reserve shortage: 1100 $/MW
+M_DC = 3500.0  # DC power flow residual: 3500 $/MW
 
 
-def compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t):
+def compute_thermal_violations(
+    theta, b_branch_t, branch_from, branch_to, branch_rate_t
+):
     """
     Compute per-branch thermal violations from explicit voltage angles.
 
@@ -73,8 +75,8 @@ def compute_dc_violations(theta, pg, pd, B_bus_t, gen_bus_idx_t):
     n_bus = pd.shape[1]
     pg_bus = torch.zeros(batch_size, n_bus, device=pg.device, dtype=pg.dtype)
     pg_bus.scatter_add_(1, gen_bus_idx_t.unsqueeze(0).expand(batch_size, -1), pg)
-    net = pg_bus - pd                        # (batch, n_bus)
-    B_theta = theta @ B_bus_t.T              # (batch, n_bus)  B_bus is symmetric
+    net = pg_bus - pd  # (batch, n_bus)
+    B_theta = theta @ B_bus_t.T  # (batch, n_bus)  B_bus is symmetric
     residual = (B_theta - net).abs().sum(dim=-1, keepdim=True)  # (batch, 1)
     return residual
 
@@ -91,22 +93,37 @@ def compute_reserve_shortage(pg, pg_max, r_max, R):
     return torch.clamp(R - total_reserve, min=0.0)
 
 
-def compute_constraint_penalty(pg, theta, pd, D, pg_max, r_max, R,
-                               b_branch_t, branch_from, branch_to, branch_rate_t,
-                               B_bus_t, gen_bus_idx_t, problem_type="ed"):
+def compute_constraint_penalty(
+    pg,
+    theta,
+    pd,
+    D,
+    pg_max,
+    r_max,
+    R,
+    b_branch_t,
+    branch_from,
+    branch_to,
+    branch_rate_t,
+    B_bus_t,
+    gen_bus_idx_t,
+    problem_type="ed",
+):
     """
     Constraint penalty psi(pg_hat) from Eq. 8 in the paper, extended with thermal and DC penalties.
     """
     psi = M_PB * compute_power_balance_violation(pg, D)
     if problem_type == "edr":
         psi = psi + M_RES * compute_reserve_shortage(pg, pg_max, r_max, R)
-    
-    xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
+
+    xi = compute_thermal_violations(
+        theta, b_branch_t, branch_from, branch_to, branch_rate_t
+    )
     psi = psi + M_TH * xi.sum(dim=-1, keepdim=True)
-    
+
     dc_viol = compute_dc_violations(theta, pg, pd, B_bus_t, gen_bus_idx_t)
     psi = psi + M_DC * dc_viol
-    
+
     return psi  # (batch, 1)
 
 
@@ -114,10 +131,28 @@ def compute_constraint_penalty(pg, theta, pd, D, pg_max, r_max, R,
 # Loss Functions
 # ---------------------------------------------------------------------------
 
-def loss_sl(pg_hat, theta, pg_star, pd, D, cost_coef, pg_max, r_max, R,
-            b_branch_t, branch_from, branch_to, branch_rate_t,
-            B_bus_t, gen_bus_idx_t,
-            lam, mu, problem_type, is_feasible_model):
+
+def loss_sl(
+    pg_hat,
+    theta,
+    pg_star,
+    pd,
+    D,
+    cost_coef,
+    pg_max,
+    r_max,
+    R,
+    b_branch_t,
+    branch_from,
+    branch_to,
+    branch_rate_t,
+    B_bus_t,
+    gen_bus_idx_t,
+    lam,
+    mu,
+    problem_type,
+    is_feasible_model,
+):
     """
     Supervised Learning loss (Eq. 10, extended with DC penalty).
 
@@ -133,19 +168,45 @@ def loss_sl(pg_hat, theta, pg_star, pd, D, cost_coef, pg_max, r_max, R,
         mae = torch.tensor(0.0, device=pg_hat.device, dtype=pg_hat.dtype)
 
     psi = compute_constraint_penalty(
-        pg_hat, theta, pd, D, pg_max, r_max, R,
-        b_branch_t, branch_from, branch_to, branch_rate_t,
-        B_bus_t, gen_bus_idx_t, problem_type
+        pg_hat,
+        theta,
+        pd,
+        D,
+        pg_max,
+        r_max,
+        R,
+        b_branch_t,
+        branch_from,
+        branch_to,
+        branch_rate_t,
+        B_bus_t,
+        gen_bus_idx_t,
+        problem_type,
     )
     constraint_pen = lam * psi.mean()
 
     return mae + constraint_pen
 
 
-def loss_ssl(pg_hat, theta, pd, D, cost_coef, pg_max, r_max, R,
-             b_branch_t, branch_from, branch_to, branch_rate_t,
-             B_bus_t, gen_bus_idx_t,
-             lam, problem_type, is_feasible_model):
+def loss_ssl(
+    pg_hat,
+    theta,
+    pd,
+    D,
+    cost_coef,
+    pg_max,
+    r_max,
+    R,
+    b_branch_t,
+    branch_from,
+    branch_to,
+    branch_rate_t,
+    B_bus_t,
+    gen_bus_idx_t,
+    lam,
+    problem_type,
+    is_feasible_model,
+):
     """
     Self-Supervised Learning loss (Eq. 12, extended with DC penalty).
 
@@ -155,9 +216,20 @@ def loss_ssl(pg_hat, theta, pd, D, cost_coef, pg_max, r_max, R,
     gen_cost = (cost_coef.unsqueeze(0) * pg_hat).sum(dim=-1).mean()
 
     psi = compute_constraint_penalty(
-        pg_hat, theta, pd, D, pg_max, r_max, R,
-        b_branch_t, branch_from, branch_to, branch_rate_t,
-        B_bus_t, gen_bus_idx_t, problem_type
+        pg_hat,
+        theta,
+        pd,
+        D,
+        pg_max,
+        r_max,
+        R,
+        b_branch_t,
+        branch_from,
+        branch_to,
+        branch_rate_t,
+        B_bus_t,
+        gen_bus_idx_t,
+        problem_type,
     )
     constraint_pen = lam * psi.mean()
 
@@ -168,6 +240,7 @@ def loss_ssl(pg_hat, theta, pd, D, cost_coef, pg_max, r_max, R,
 # Dataset Construction
 # ---------------------------------------------------------------------------
 
+
 def build_datasets(instances, pg_star, obj_star, case, problem_type, device="cpu"):
     """
     Build train/val/test TensorDatasets.
@@ -175,7 +248,9 @@ def build_datasets(instances, pg_star, obj_star, case, problem_type, device="cpu
     Split: first 80% train, next 10% val, last 10% test.
     """
     pd_all = torch.tensor(instances["pd"], dtype=torch.float32, device=device)
-    R_all = torch.tensor(instances["R_req"], dtype=torch.float32, device=device).unsqueeze(1)
+    R_all = torch.tensor(
+        instances["R_req"], dtype=torch.float32, device=device
+    ).unsqueeze(1)
 
     n = len(pd_all)
     n_train = int(0.8 * n)
@@ -192,9 +267,11 @@ def build_datasets(instances, pg_star, obj_star, case, problem_type, device="cpu
         return t[s:e]
 
     splits = {}
-    for name, (s, e) in [("train", (0, n_train)),
-                          ("val", (n_train, n_train + n_val)),
-                          ("test", (n_train + n_val, n))]:
+    for name, (s, e) in [
+        ("train", (0, n_train)),
+        ("val", (n_train, n_train + n_val)),
+        ("test", (n_train + n_val, n)),
+    ]:
         splits[name] = TensorDataset(
             _slice(pd_all, s, e),
             _slice(R_all, s, e),
@@ -209,16 +286,36 @@ def build_datasets(instances, pg_star, obj_star, case, problem_type, device="cpu
 # Training Loop
 # ---------------------------------------------------------------------------
 
-def train_model(model, datasets, case, problem_type, mode="ssl",
-                lam=0.0, mu=0.0,
-                b_branch_t=None, branch_from=None, branch_to=None,
-                branch_rate_t=None, B_bus_t=None, gen_bus_idx_t=None,
-                cost_coef_t=None, pg_max_t=None, r_max_t=None,
-                lr=1e-2, weight_decay=1e-6,
-                batch_size_train=64, batch_size_eval=256,
-                max_epochs=500, patience=20, lr_patience=10,
-                max_time_min=150, device="cpu", verbose=True,
-                epoch_callback=None):
+
+def train_model(
+    model,
+    datasets,
+    case,
+    problem_type,
+    mode="ssl",
+    lam=0.0,
+    mu=0.0,
+    b_branch_t=None,
+    branch_from=None,
+    branch_to=None,
+    branch_rate_t=None,
+    B_bus_t=None,
+    gen_bus_idx_t=None,
+    cost_coef_t=None,
+    pg_max_t=None,
+    r_max_t=None,
+    lr=1e-2,
+    weight_decay=1e-6,
+    batch_size_train=64,
+    batch_size_eval=256,
+    max_epochs=500,
+    patience=20,
+    lr_patience=10,
+    max_time_min=150,
+    device="cpu",
+    verbose=True,
+    epoch_callback=None,
+):
     """
     Train the model with SL or SSL.
 
@@ -236,12 +333,17 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
     """
     is_feasible = hasattr(model, "power_balance") and model.power_balance is not None
 
-    train_loader = DataLoader(datasets["train"], batch_size=batch_size_train, shuffle=True)
+    train_loader = DataLoader(
+        datasets["train"], batch_size=batch_size_train, shuffle=True
+    )
     val_loader = DataLoader(datasets["val"], batch_size=batch_size_eval, shuffle=False)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.1, patience=lr_patience,
+        optimizer,
+        mode="min",
+        factor=0.1,
+        patience=lr_patience,
     )
 
     best_val_loss = float("inf")
@@ -275,19 +377,45 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
             # Loss
             if mode == "sl":
                 loss = loss_sl(
-                    pg_hat, theta, pg_star_b, pd_b, D_b,
-                    cost_coef_t, pg_max_t, r_max_t, R_b,
-                    b_branch_t, branch_from, branch_to, branch_rate_t,
-                    B_bus_t, gen_bus_idx_t,
-                    lam, mu, problem_type, is_feasible,
+                    pg_hat,
+                    theta,
+                    pg_star_b,
+                    pd_b,
+                    D_b,
+                    cost_coef_t,
+                    pg_max_t,
+                    r_max_t,
+                    R_b,
+                    b_branch_t,
+                    branch_from,
+                    branch_to,
+                    branch_rate_t,
+                    B_bus_t,
+                    gen_bus_idx_t,
+                    lam,
+                    mu,
+                    problem_type,
+                    is_feasible,
                 )
             else:
                 loss = loss_ssl(
-                    pg_hat, theta, pd_b, D_b,
-                    cost_coef_t, pg_max_t, r_max_t, R_b,
-                    b_branch_t, branch_from, branch_to, branch_rate_t,
-                    B_bus_t, gen_bus_idx_t,
-                    lam, problem_type, is_feasible,
+                    pg_hat,
+                    theta,
+                    pd_b,
+                    D_b,
+                    cost_coef_t,
+                    pg_max_t,
+                    r_max_t,
+                    R_b,
+                    b_branch_t,
+                    branch_from,
+                    branch_to,
+                    branch_rate_t,
+                    B_bus_t,
+                    gen_bus_idx_t,
+                    lam,
+                    problem_type,
+                    is_feasible,
                 )
 
             optimizer.zero_grad()
@@ -314,19 +442,45 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
 
                 if mode == "sl":
                     loss = loss_sl(
-                        pg_hat, theta, pg_star_b, pd_b, D_b,
-                        cost_coef_t, pg_max_t, r_max_t, R_b,
-                        b_branch_t, branch_from, branch_to, branch_rate_t,
-                        B_bus_t, gen_bus_idx_t,
-                        1.0, 1.0, problem_type, is_feasible,
+                        pg_hat,
+                        theta,
+                        pg_star_b,
+                        pd_b,
+                        D_b,
+                        cost_coef_t,
+                        pg_max_t,
+                        r_max_t,
+                        R_b,
+                        b_branch_t,
+                        branch_from,
+                        branch_to,
+                        branch_rate_t,
+                        B_bus_t,
+                        gen_bus_idx_t,
+                        1.0,
+                        1.0,
+                        problem_type,
+                        is_feasible,
                     )
                 else:
                     loss = loss_ssl(
-                        pg_hat, theta, pd_b, D_b,
-                        cost_coef_t, pg_max_t, r_max_t, R_b,
-                        b_branch_t, branch_from, branch_to, branch_rate_t,
-                        B_bus_t, gen_bus_idx_t,
-                        1.0, problem_type, is_feasible,
+                        pg_hat,
+                        theta,
+                        pd_b,
+                        D_b,
+                        cost_coef_t,
+                        pg_max_t,
+                        r_max_t,
+                        R_b,
+                        b_branch_t,
+                        branch_from,
+                        branch_to,
+                        branch_rate_t,
+                        B_bus_t,
+                        gen_bus_idx_t,
+                        1.0,
+                        problem_type,
+                        is_feasible,
                     )
                 val_losses.append(loss.item())
 
@@ -344,15 +498,19 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
             epochs_no_improve += 1
 
         if verbose and epoch % 5 == 0:
-            print(f"  Epoch {epoch:3d} | train {avg_train:.6f} | val {avg_val:.6f} | "
-                  f"lr {optimizer.param_groups[0]['lr']:.1e} | no_improve {epochs_no_improve}")
+            print(
+                f"  Epoch {epoch:3d} | train {avg_train:.6f} | val {avg_val:.6f} | "
+                f"lr {optimizer.param_groups[0]['lr']:.1e} | no_improve {epochs_no_improve}"
+            )
 
         if epoch_callback is not None:
             epoch_callback(epoch, avg_train, avg_val, (time.time() - start_time) / 60.0)
 
         if epochs_no_improve >= patience:
             if verbose:
-                print(f"  Early stopping at epoch {epoch} (no improvement for {patience} epochs).")
+                print(
+                    f"  Early stopping at epoch {epoch} (no improvement for {patience} epochs)."
+                )
             break
 
     # Restore best model
@@ -361,7 +519,9 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
 
     elapsed_min = (time.time() - start_time) / 60.0
     if verbose:
-        print(f"  Training done in {elapsed_min:.1f} min. Best val loss: {best_val_loss:.6f}")
+        print(
+            f"  Training done in {elapsed_min:.1f} min. Best val loss: {best_val_loss:.6f}"
+        )
 
     history["best_val_loss"] = best_val_loss
     history["training_time_min"] = elapsed_min
@@ -372,12 +532,26 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
 # Evaluation
 # ---------------------------------------------------------------------------
 
+
 @torch.no_grad()
-def evaluate_model(model, dataset, case, problem_type,
-                   b_branch_t, branch_from, branch_to, branch_rate_t,
-                   B_bus_t, gen_bus_idx_t,
-                   cost_coef_t, pg_max_t, r_max_t,
-                   batch_size=256, tol=1e-4, device="cpu"):
+def evaluate_model(
+    model,
+    dataset,
+    case,
+    problem_type,
+    b_branch_t,
+    branch_from,
+    branch_to,
+    branch_rate_t,
+    B_bus_t,
+    gen_bus_idx_t,
+    cost_coef_t,
+    pg_max_t,
+    r_max_t,
+    batch_size=256,
+    tol=1e-4,
+    device="cpu",
+):
     """
     Evaluate model on a dataset and compute:
       - Mean optimality gap
@@ -410,17 +584,23 @@ def evaluate_model(model, dataset, case, problem_type,
         # --- Compute penalized objective for predictions ---
         gen_cost = (cost_coef_t.unsqueeze(0) * pg_hat).sum(dim=-1)
 
-        xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
+        xi = compute_thermal_violations(
+            theta, b_branch_t, branch_from, branch_to, branch_rate_t
+        )
         thermal = M_TH * xi.sum(dim=-1)
 
         pb_viol = compute_power_balance_violation(pg_hat, D_b).squeeze(-1)
         pb_pen = M_PB * pb_viol
 
-        dc_viol = compute_dc_violations(theta, pg_hat, pd_b, B_bus_t, gen_bus_idx_t).squeeze(-1)
+        dc_viol = compute_dc_violations(
+            theta, pg_hat, pd_b, B_bus_t, gen_bus_idx_t
+        ).squeeze(-1)
         dc_pen = M_DC * dc_viol
 
         if problem_type == "edr":
-            res_short = compute_reserve_shortage(pg_hat, pg_max_t, r_max_t, R_b).squeeze(-1)
+            res_short = compute_reserve_shortage(
+                pg_hat, pg_max_t, r_max_t, R_b
+            ).squeeze(-1)
             res_pen = M_RES * res_short
         else:
             res_short = torch.zeros_like(pb_viol)
@@ -431,10 +611,16 @@ def evaluate_model(model, dataset, case, problem_type,
 
         # Optimality gap (only for instances with valid ground truth)
         valid = ~torch.isnan(z_star)
-        gaps = torch.where(valid, (z_hat - z_star) / z_star.abs().clamp(min=1e-8), torch.zeros_like(z_hat))
+        gaps = torch.where(
+            valid,
+            (z_hat - z_star) / z_star.abs().clamp(min=1e-8),
+            torch.zeros_like(z_hat),
+        )
 
         # Feasibility check
-        bounds_ok = (pg_hat >= -tol).all(dim=-1) & (pg_hat <= pg_max_t.unsqueeze(0) + tol).all(dim=-1)
+        bounds_ok = (pg_hat >= -tol).all(dim=-1) & (
+            pg_hat <= pg_max_t.unsqueeze(0) + tol
+        ).all(dim=-1)
         pb_ok = pb_viol < tol
         dc_ok = dc_viol < tol
         if problem_type == "edr":
@@ -464,7 +650,9 @@ def evaluate_model(model, dataset, case, problem_type,
         sgm_gap = float("nan")
 
     results = {
-        "mean_gap_pct": 100.0 * np.nanmean(valid_gaps) if len(valid_gaps) > 0 else float("nan"),
+        "mean_gap_pct": 100.0 * np.nanmean(valid_gaps)
+        if len(valid_gaps) > 0
+        else float("nan"),
         "sgm_gap_pct": 100.0 * sgm_gap,
         "feasibility_rate_pct": 100.0 * np.mean(all_feasible),
         "mean_pb_violation_pu": np.mean(all_pb_viol),

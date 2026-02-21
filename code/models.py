@@ -12,10 +12,11 @@ Reference: "End-to-End Feasible Optimization Proxies for Large-Scale
 Economic Dispatch" (arXiv 2304.11726v2), Sections III-IV.
 """
 
+import math
+
+import scipy.sparse as sp
 import torch
 import torch.nn as nn
-import scipy.sparse as sp
-import math
 
 EPS = 1e-8
 
@@ -23,6 +24,7 @@ EPS = 1e-8
 # ---------------------------------------------------------------------------
 # Shared theta computation
 # ---------------------------------------------------------------------------
+
 
 def compute_theta(pg, pd, B_pinv_t, gen_bus_idx_t):
     """
@@ -42,14 +44,15 @@ def compute_theta(pg, pd, B_pinv_t, gen_bus_idx_t):
     # Scatter pg onto buses
     pg_bus = torch.zeros(batch_size, n_bus, device=pg.device, dtype=pg.dtype)
     pg_bus.scatter_add_(1, gen_bus_idx_t.unsqueeze(0).expand(batch_size, -1), pg)
-    net = pg_bus - pd                   # (batch, n_bus) net injection
-    theta = net @ B_pinv_t.T            # (batch, n_bus)  B_pinv is symmetric, but .T is safe
+    net = pg_bus - pd  # (batch, n_bus) net injection
+    theta = net @ B_pinv_t.T  # (batch, n_bus)  B_pinv is symmetric, but .T is safe
     return theta
 
 
 # ---------------------------------------------------------------------------
 # Repair Layers (differentiable, closed-form)
 # ---------------------------------------------------------------------------
+
 
 class PowerBalanceRepair(nn.Module):
     """
@@ -72,9 +75,12 @@ class PowerBalanceRepair(nn.Module):
         Returns:
             pg_repaired : (batch, n_gen)
         """
-        total_gen = pg.sum(dim=-1, keepdim=True)        # (batch, 1)
-        total_max = pg_max.sum(dim=-1, keepdim=True) if pg_max.dim() > 1 \
-            else pg_max.sum().unsqueeze(0).unsqueeze(0)  # scalar -> (1, 1)
+        total_gen = pg.sum(dim=-1, keepdim=True)  # (batch, 1)
+        total_max = (
+            pg_max.sum(dim=-1, keepdim=True)
+            if pg_max.dim() > 1
+            else pg_max.sum().unsqueeze(0).unsqueeze(0)
+        )  # scalar -> (1, 1)
 
         # Shortage: need to increase generation
         eta_up = (D - total_gen) / (total_max - total_gen + EPS)
@@ -84,10 +90,10 @@ class PowerBalanceRepair(nn.Module):
         eta_down = (total_gen - D) / (total_gen + EPS)
         eta_down = eta_down.clamp(0.0, 1.0)
 
-        shortage = (total_gen < D)  # (batch, 1) bool
+        shortage = total_gen < D  # (batch, 1) bool
 
-        pg_up = (1 - eta_up) * pg + eta_up * pg_max     # move toward pg_max
-        pg_down = (1 - eta_down) * pg                    # move toward 0
+        pg_up = (1 - eta_up) * pg + eta_up * pg_max  # move toward pg_max
+        pg_down = (1 - eta_down) * pg  # move toward 0
 
         pg_repaired = torch.where(shortage, pg_up, pg_down)
         return pg_repaired
@@ -113,15 +119,15 @@ class ReserveRepair(nn.Module):
             pg_adj : (batch, n_gen) adjusted dispatch
         """
         # Maximum achievable reserve per generator
-        r_star = torch.min(r_max, pg_max - pg)                       # (batch, n_gen)
-        delta_R = R - r_star.sum(dim=-1, keepdim=True)               # reserve shortage
+        r_star = torch.min(r_max, pg_max - pg)  # (batch, n_gen)
+        delta_R = R - r_star.sum(dim=-1, keepdim=True)  # reserve shortage
 
         # Target dispatch = pg_max - r_max (where full reserve is available)
-        target = pg_max - r_max                                       # (n_gen,) or (batch, n_gen)
+        target = pg_max - r_max  # (n_gen,) or (batch, n_gen)
 
         # Split generators into two groups
-        G_up = (pg <= target).float()    # can increase dispatch without losing reserves
-        G_down = (pg > target).float()   # must decrease dispatch to free up reserves
+        G_up = (pg <= target).float()  # can increase dispatch without losing reserves
+        G_down = (pg > target).float()  # must decrease dispatch to free up reserves
 
         # Headroom for each group
         Delta_up = ((target - pg) * G_up).sum(dim=-1, keepdim=True)
@@ -149,6 +155,7 @@ class ReserveRepair(nn.Module):
 # DNN Backbone
 # ---------------------------------------------------------------------------
 
+
 class DNNBackbone(nn.Module):
     """
     Fully-connected DNN with ReLU, BatchNorm, and Dropout.
@@ -159,7 +166,9 @@ class DNNBackbone(nn.Module):
         theta : (n_bus,) in [-30, 30] degrees (in radians) via sigmoid — voltage angles
     """
 
-    def __init__(self, input_dim, output_dim, theta_dim, hidden_dim=256, n_layers=3, dropout=0.2):
+    def __init__(
+        self, input_dim, output_dim, theta_dim, hidden_dim=256, n_layers=3, dropout=0.2
+    ):
         super().__init__()
         layers = []
         in_dim = input_dim
@@ -184,6 +193,7 @@ class DNNBackbone(nn.Module):
 # Model Wrappers
 # ---------------------------------------------------------------------------
 
+
 class DNNModel(nn.Module):
     """
     Vanilla DNN baseline (Figure 2a in paper).
@@ -194,15 +204,25 @@ class DNNModel(nn.Module):
     Returns (pg, theta).
     """
 
-    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, B_pinv=None, gen_bus_idx=None):
+    def __init__(
+        self,
+        n_bus,
+        n_gen,
+        pg_max,
+        hidden_dim=256,
+        n_layers=3,
+        B_pinv=None,
+        gen_bus_idx=None,
+    ):
         super().__init__()
-        self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
-                                    hidden_dim=hidden_dim, n_layers=n_layers)
+        self.backbone = DNNBackbone(
+            n_bus, n_gen, theta_dim=n_bus, hidden_dim=hidden_dim, n_layers=n_layers
+        )
         self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
 
     def forward(self, pd):
-        z, theta = self.backbone(pd)      # (batch, n_gen), (batch, n_bus)
-        pg = z * self.pg_max              # (batch, n_gen) in [0, pg_max]
+        z, theta = self.backbone(pd)  # (batch, n_gen), (batch, n_bus)
+        pg = z * self.pg_max  # (batch, n_gen) in [0, pg_max]
         return pg, theta
 
 
@@ -217,10 +237,22 @@ class E2ELRModel(nn.Module):
     Returns (pg, theta).
     """
 
-    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, problem_type="ed", r_max=None, B_pinv=None, gen_bus_idx=None):
+    def __init__(
+        self,
+        n_bus,
+        n_gen,
+        pg_max,
+        hidden_dim=256,
+        n_layers=3,
+        problem_type="ed",
+        r_max=None,
+        B_pinv=None,
+        gen_bus_idx=None,
+    ):
         super().__init__()
-        self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
-                                    hidden_dim=hidden_dim, n_layers=n_layers)
+        self.backbone = DNNBackbone(
+            n_bus, n_gen, theta_dim=n_bus, hidden_dim=hidden_dim, n_layers=n_layers
+        )
         self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
         self.power_balance = PowerBalanceRepair()
         self.problem_type = problem_type
@@ -241,12 +273,16 @@ class E2ELRModel(nn.Module):
         Returns:
             (pg, theta) : ((batch, n_gen), (batch, n_bus))
         """
-        z, theta = self.backbone(pd)                   # (batch, n_gen), (batch, n_bus)
-        pg = z * self.pg_max                           # enforce bounds
+        z, theta = self.backbone(pd)  # (batch, n_gen), (batch, n_bus)
+        pg = z * self.pg_max  # enforce bounds
 
-        pg = self.power_balance(pg, self.pg_max, D)    # enforce power balance
+        pg = self.power_balance(pg, self.pg_max, D)  # enforce power balance
 
-        if self.problem_type == "edr" and R is not None and self.reserve_repair is not None:
+        if (
+            self.problem_type == "edr"
+            and R is not None
+            and self.reserve_repair is not None
+        ):
             pg = self.reserve_repair(pg, self.pg_max, self.r_max, R)
 
         return pg, theta
@@ -272,7 +308,9 @@ class DCPowerFlowLayer(nn.Module):
         """
         super().__init__()
         if not isinstance(B_t, torch.Tensor):
-            B_t = torch.tensor(B_t.toarray() if sp.issparse(B_t) else B_t, dtype=torch.float32)
+            B_t = torch.tensor(
+                B_t.toarray() if sp.issparse(B_t) else B_t, dtype=torch.float32
+            )
         if not isinstance(gen_bus_idx, torch.Tensor):
             gen_bus_idx = torch.tensor(gen_bus_idx, dtype=torch.long)
         self.register_buffer("B_t", B_t)
@@ -300,9 +338,11 @@ class DCPowerFlowLayer(nn.Module):
             pg,
         )
 
-        net = pg_bus - pd                               # (batch, n_bus) net injection
-        residual = net - theta @ self.B_t.T             # (batch, n_bus):  b - B @ theta
-        theta_repaired = theta + residual @ self.B_pinv_t.T  # projection onto affine subspace
+        net = pg_bus - pd  # (batch, n_bus) net injection
+        residual = net - theta @ self.B_t.T  # (batch, n_bus):  b - B @ theta
+        theta_repaired = (
+            theta + residual @ self.B_pinv_t.T
+        )  # projection onto affine subspace
         return theta_repaired
 
 
@@ -315,10 +355,23 @@ class E2ELRDCModel(nn.Module):
     Returns (pg, theta).
     """
 
-    def __init__(self, n_bus, n_gen, pg_max, hidden_dim=256, n_layers=3, problem_type="ed", r_max=None, B=None, gen_bus_idx=None, use_compute_theta=False):
+    def __init__(
+        self,
+        n_bus,
+        n_gen,
+        pg_max,
+        hidden_dim=256,
+        n_layers=3,
+        problem_type="ed",
+        r_max=None,
+        B=None,
+        gen_bus_idx=None,
+        use_compute_theta=False,
+    ):
         super().__init__()
-        self.backbone = DNNBackbone(n_bus, n_gen, theta_dim=n_bus,
-                                    hidden_dim=hidden_dim, n_layers=n_layers)
+        self.backbone = DNNBackbone(
+            n_bus, n_gen, theta_dim=n_bus, hidden_dim=hidden_dim, n_layers=n_layers
+        )
         self.register_buffer("pg_max", torch.tensor(pg_max, dtype=torch.float32))
         self.power_balance = PowerBalanceRepair()
         self.DC_power_flow = DCPowerFlowLayer(B, gen_bus_idx)
@@ -341,16 +394,22 @@ class E2ELRDCModel(nn.Module):
         Returns:
             (pg, theta) : ((batch, n_gen), (batch, n_bus))
         """
-        z, theta = self.backbone(pd)                   # (batch, n_gen), (batch, n_bus)
-        pg = z * self.pg_max                           # enforce bounds
+        z, theta = self.backbone(pd)  # (batch, n_gen), (batch, n_bus)
+        pg = z * self.pg_max  # enforce bounds
 
-        pg = self.power_balance(pg, self.pg_max, D)    # enforce power balance
+        pg = self.power_balance(pg, self.pg_max, D)  # enforce power balance
 
-        if self.problem_type == "edr" and R is not None and self.reserve_repair is not None:
+        if (
+            self.problem_type == "edr"
+            and R is not None
+            and self.reserve_repair is not None
+        ):
             pg = self.reserve_repair(pg, self.pg_max, self.r_max, R)
 
         if self.use_compute_theta:
-            theta = compute_theta(pg, pd, self.DC_power_flow.B_pinv_t, self.DC_power_flow.gen_bus_idx_t)
+            theta = compute_theta(
+                pg, pd, self.DC_power_flow.B_pinv_t, self.DC_power_flow.gen_bus_idx_t
+            )
         else:
             theta = self.DC_power_flow(pg, pd, theta)  # enforce DC power flow equations
 

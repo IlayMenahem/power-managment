@@ -7,16 +7,17 @@ Economic Dispatch" (arXiv 2304.11726v2)
 """
 
 import re
+
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import splu
 from scipy.optimize import linprog
-
+from scipy.sparse.linalg import splu
 from train import M_TH
 
 # ---------------------------------------------------------------------------
 # 1. MATPOWER Parser
 # ---------------------------------------------------------------------------
+
 
 def parse_matpower(filepath):
     """Parse a MATPOWER .m file and return a dict with bus, gen, gencost, branch data."""
@@ -132,6 +133,7 @@ def extract_case_data(raw):
 # 2. B-Matrix Computation (replaces PTDF)
 # ---------------------------------------------------------------------------
 
+
 def compute_B_matrix(case):
     """
     Compute the DC power flow B-matrix and all derived quantities needed
@@ -211,6 +213,7 @@ def compute_B_matrix(case):
 # 3. Instance Generation
 # ---------------------------------------------------------------------------
 
+
 def compute_reserve_params(case):
     """Compute reserve parameters alpha_r and r_max as described in Section V-A."""
     pg_max = case["pg_max"]
@@ -239,7 +242,7 @@ def generate_instances(case, n_instances, problem_type="ed", seed=42):
     # Per-bus multiplicative noise eta ~ LogNormal(mean=1, std=0.05)
     # LogNormal with mu=0, sigma: mean = exp(mu + sigma^2/2) = 1 => mu = -sigma^2/2
     sigma_ln = 0.05
-    mu_ln = -0.5 * sigma_ln ** 2
+    mu_ln = -0.5 * sigma_ln**2
     eta = rng.lognormal(mean=mu_ln, sigma=sigma_ln, size=(n_instances, n_bus))
 
     pd = gamma[:, None] * eta * pd_ref[None, :]
@@ -260,8 +263,20 @@ def generate_instances(case, n_instances, problem_type="ed", seed=42):
 # 4. LP Solver — SciPy HiGHS (explicit DC power flow via B-matrix)
 # ---------------------------------------------------------------------------
 
-def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-                   problem_type="ed", R_req=0.0, r_max=None, M_th=1500.0):
+
+def solve_ed_highs(
+    pd_vec,
+    case,
+    b_branch,
+    B_reduced_csc,
+    F_theta,
+    C_g_r,
+    non_slack,
+    problem_type="ed",
+    R_req=0.0,
+    r_max=None,
+    M_th=1500.0,
+):
     """
     Solve a single ED/ED-R instance using scipy.optimize.linprog with HiGHS.
 
@@ -295,7 +310,7 @@ def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_sl
         n_vars = n_gen + n_branch + n_reduced + n_gen
         c = np.zeros(n_vars)
         c[:n_gen] = cost_coef
-        c[n_gen:n_gen + n_branch] = M_th
+        c[n_gen : n_gen + n_branch] = M_th
 
         # Equalities: (1) power balance, (2) DC power flow
         n_eq = 1 + n_reduced
@@ -308,7 +323,7 @@ def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_sl
 
         # (2) B_reduced @ theta_r - C_g_r @ pg = -pd_r
         A_eq[1:, :n_gen] = -C_g_r
-        A_eq[1:, n_theta:n_theta + n_reduced] = B_reduced_dense
+        A_eq[1:, n_theta : n_theta + n_reduced] = B_reduced_dense
         b_eq[1:] = -pd_r
 
         # Inequalities:
@@ -322,27 +337,27 @@ def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_sl
         b_ub = np.zeros(n_ineq)
         row = 0
 
-        A_ub[row:row + n_branch, n_gen:n_gen + n_branch] = -np.eye(n_branch)
-        A_ub[row:row + n_branch, n_theta:n_theta + n_reduced] = F_theta
-        b_ub[row:row + n_branch] = branch_rate
+        A_ub[row : row + n_branch, n_gen : n_gen + n_branch] = -np.eye(n_branch)
+        A_ub[row : row + n_branch, n_theta : n_theta + n_reduced] = F_theta
+        b_ub[row : row + n_branch] = branch_rate
         row += n_branch
 
-        A_ub[row:row + n_branch, n_gen:n_gen + n_branch] = -np.eye(n_branch)
-        A_ub[row:row + n_branch, n_theta:n_theta + n_reduced] = -F_theta
-        b_ub[row:row + n_branch] = branch_rate
+        A_ub[row : row + n_branch, n_gen : n_gen + n_branch] = -np.eye(n_branch)
+        A_ub[row : row + n_branch, n_theta : n_theta + n_reduced] = -F_theta
+        b_ub[row : row + n_branch] = branch_rate
         row += n_branch
 
         A_ub[row, n_r:] = -1.0
         b_ub[row] = -R_req
         row += 1
 
-        A_ub[row:row + n_gen, :n_gen] = np.eye(n_gen)
-        A_ub[row:row + n_gen, n_r:] = np.eye(n_gen)
-        b_ub[row:row + n_gen] = pg_max
+        A_ub[row : row + n_gen, :n_gen] = np.eye(n_gen)
+        A_ub[row : row + n_gen, n_r:] = np.eye(n_gen)
+        b_ub[row : row + n_gen] = pg_max
         row += n_gen
 
-        A_ub[row:row + n_gen, n_r:] = np.eye(n_gen)
-        b_ub[row:row + n_gen] = r_max
+        A_ub[row : row + n_gen, n_r:] = np.eye(n_gen)
+        b_ub[row : row + n_gen] = r_max
 
         bounds = (
             [(0, pg_max[i]) for i in range(n_gen)]
@@ -356,7 +371,7 @@ def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_sl
         n_vars = n_gen + n_branch + n_reduced
         c = np.zeros(n_vars)
         c[:n_gen] = cost_coef
-        c[n_gen:n_gen + n_branch] = M_th
+        c[n_gen : n_gen + n_branch] = M_th
 
         n_eq = 1 + n_reduced
         A_eq = np.zeros((n_eq, n_vars))
@@ -373,11 +388,11 @@ def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_sl
         A_ub = np.zeros((n_ineq, n_vars))
         b_ub = np.zeros(n_ineq)
 
-        A_ub[:n_branch, n_gen:n_gen + n_branch] = -np.eye(n_branch)
+        A_ub[:n_branch, n_gen : n_gen + n_branch] = -np.eye(n_branch)
         A_ub[:n_branch, n_theta:] = F_theta
         b_ub[:n_branch] = branch_rate
 
-        A_ub[n_branch:, n_gen:n_gen + n_branch] = -np.eye(n_branch)
+        A_ub[n_branch:, n_gen : n_gen + n_branch] = -np.eye(n_branch)
         A_ub[n_branch:, n_theta:] = -F_theta
         b_ub[n_branch:] = branch_rate
 
@@ -387,8 +402,9 @@ def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_sl
             + [(None, None) for _ in range(n_reduced)]
         )
 
-    result = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
-                     bounds=bounds, method="highs")
+    result = linprog(
+        c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method="highs"
+    )
 
     if result.success:
         return result.x[:n_gen], result.fun
@@ -399,18 +415,51 @@ def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_sl
 # 5. Batch / Parallel Solving
 # ---------------------------------------------------------------------------
 
+
 def _solve_one_highs(args):
     """Worker function for multiprocessing (must be at module level)."""
-    i, pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack, \
-        problem_type, R_req, r_max, M_th = args
+    (
+        i,
+        pd_vec,
+        case,
+        b_branch,
+        B_reduced_csc,
+        F_theta,
+        C_g_r,
+        non_slack,
+        problem_type,
+        R_req,
+        r_max,
+        M_th,
+    ) = args
     return solve_ed_highs(
-        pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-        problem_type=problem_type, R_req=R_req, r_max=r_max, M_th=M_th,
+        pd_vec,
+        case,
+        b_branch,
+        B_reduced_csc,
+        F_theta,
+        C_g_r,
+        non_slack,
+        problem_type=problem_type,
+        R_req=R_req,
+        r_max=r_max,
+        M_th=M_th,
     )
 
 
-def solve_all_instances(instances, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-                        problem_type="ed", M_th=1500.0, verbose=True, n_workers=4):
+def solve_all_instances(
+    instances,
+    case,
+    b_branch,
+    B_reduced_csc,
+    F_theta,
+    C_g_r,
+    non_slack,
+    problem_type="ed",
+    M_th=1500.0,
+    verbose=True,
+    n_workers=4,
+):
     """
     Solve all instances in parallel using HiGHS and return optimal dispatches
     and objective values.
@@ -436,14 +485,25 @@ def solve_all_instances(instances, case, b_branch, B_reduced_csc, F_theta, C_g_r
 
     r_max_arg = r_max if problem_type == "edr" else None
     work_items = [
-        (i, pd_all[i], case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-         problem_type, R_all[i], r_max_arg, M_th)
+        (
+            i,
+            pd_all[i],
+            case,
+            b_branch,
+            B_reduced_csc,
+            F_theta,
+            C_g_r,
+            non_slack,
+            problem_type,
+            R_all[i],
+            r_max_arg,
+            M_th,
+        )
         for i in range(n_instances)
     ]
 
     if verbose:
-        print(f"  Solving {n_instances} instances with HiGHS "
-              f"({n_workers} workers)...")
+        print(f"  Solving {n_instances} instances with HiGHS ({n_workers} workers)...")
 
     with Pool(n_workers) as pool:
         results = pool.map(_solve_one_highs, work_items)
@@ -474,36 +534,59 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate ED/ED-R dataset and save ground truth to checkpoints."
     )
-    parser.add_argument("--case", type=str, default="data/pglib_opf_case300_ieee.m",
-                        help="Path to MATPOWER .m case file")
-    parser.add_argument("--problem", type=str, default="ed", choices=["ed", "edr"],
-                        help="Problem type: ed (no reserves) or edr (with reserves)")
-    parser.add_argument("--n_instances", type=int, default=50000,
-                        help="Total number of instances to generate")
+    parser.add_argument(
+        "--case",
+        type=str,
+        default="data/pglib_opf_case300_ieee.m",
+        help="Path to MATPOWER .m case file",
+    )
+    parser.add_argument(
+        "--problem",
+        type=str,
+        default="ed",
+        choices=["ed", "edr"],
+        help="Problem type: ed (no reserves) or edr (with reserves)",
+    )
+    parser.add_argument(
+        "--n_instances",
+        type=int,
+        default=50000,
+        help="Total number of instances to generate",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints",
-                        help="Directory for saving ground truth solutions")
-    parser.add_argument("--n_workers", type=int, default=4,
-                        help="Number of parallel workers")
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=str,
+        default="checkpoints",
+        help="Directory for saving ground truth solutions",
+    )
+    parser.add_argument(
+        "--n_workers", type=int, default=4, help="Number of parallel workers"
+    )
     args = parser.parse_args()
 
     # 1. Load case
     print(f"Loading case: {args.case}")
     raw = parse_matpower(args.case)
     case = extract_case_data(raw)
-    print(f"  Buses: {case['n_bus']}, Generators: {case['n_gen']}, "
-          f"Branches: {case['n_branch']}")
+    print(
+        f"  Buses: {case['n_bus']}, Generators: {case['n_gen']}, "
+        f"Branches: {case['n_branch']}"
+    )
 
     # 2. Compute B-matrix
     print("Computing B-matrix...")
     t0 = time.time()
-    B_bus, B_pinv, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack = compute_B_matrix(case)
-    print(f"  B-matrix done in {time.time() - t0:.2f}s  "
-          f"(B_pinv shape: {B_pinv.shape})")
+    B_bus, B_pinv, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack = (
+        compute_B_matrix(case)
+    )
+    print(f"  B-matrix done in {time.time() - t0:.2f}s  (B_pinv shape: {B_pinv.shape})")
 
     # 3. Generate instances
-    print(f"Generating {args.n_instances} {args.problem.upper()} instances "
-          f"(seed={args.seed})...")
+    print(
+        f"Generating {args.n_instances} {args.problem.upper()} instances "
+        f"(seed={args.seed})..."
+    )
     instances = generate_instances(case, args.n_instances, args.problem, seed=args.seed)
 
     if args.problem == "edr":
@@ -515,9 +598,17 @@ if __name__ == "__main__":
     print(f"Solving with HiGHS ({args.n_workers} workers)...")
     t0 = time.time()
     pg_star, obj_star = solve_all_instances(
-        instances, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-        problem_type=args.problem, M_th=M_TH,
-        verbose=True, n_workers=args.n_workers,
+        instances,
+        case,
+        b_branch,
+        B_reduced_csc,
+        F_theta,
+        C_g_r,
+        non_slack,
+        problem_type=args.problem,
+        M_th=M_TH,
+        verbose=True,
+        n_workers=args.n_workers,
     )
     elapsed = time.time() - t0
     print(f"  Solving done in {elapsed / 60:.1f} min")
@@ -525,8 +616,10 @@ if __name__ == "__main__":
     valid = ~np.isnan(obj_star)
     print(f"  Valid solutions: {valid.sum()}/{len(obj_star)}")
     if valid.any():
-        print(f"  Objective range: [{obj_star[valid].min():.2f}, "
-              f"{obj_star[valid].max():.2f}]")
+        print(
+            f"  Objective range: [{obj_star[valid].min():.2f}, "
+            f"{obj_star[valid].max():.2f}]"
+        )
 
     # 5. Save checkpoint
     case_name = os.path.splitext(os.path.basename(args.case))[0]
