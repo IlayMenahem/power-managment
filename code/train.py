@@ -91,14 +91,22 @@ def compute_reserve_shortage(pg, pg_max, r_max, R):
     return torch.clamp(R - total_reserve, min=0.0)
 
 
-def compute_constraint_penalty(pg, D, pg_max, r_max, R, problem_type="ed"):
+def compute_constraint_penalty(pg, theta, pd, D, pg_max, r_max, R,
+                               b_branch_t, branch_from, branch_to, branch_rate_t,
+                               B_bus_t, gen_bus_idx_t, problem_type="ed"):
     """
-    Constraint penalty psi(pg_hat) from Eq. 8 in the paper.
-    For E2ELR this is zero (repair layers guarantee feasibility).
+    Constraint penalty psi(pg_hat) from Eq. 8 in the paper, extended with thermal and DC penalties.
     """
     psi = M_PB * compute_power_balance_violation(pg, D)
     if problem_type == "edr":
         psi = psi + M_RES * compute_reserve_shortage(pg, pg_max, r_max, R)
+    
+    xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
+    psi = psi + M_TH * xi.sum(dim=-1, keepdim=True)
+    
+    dc_viol = compute_dc_violations(theta, pg, pd, B_bus_t, gen_bus_idx_t)
+    psi = psi + M_DC * dc_viol
+    
     return psi  # (batch, 1)
 
 
@@ -114,7 +122,6 @@ def loss_sl(pg_hat, theta, pg_star, pd, D, cost_coef, pg_max, r_max, R,
     Supervised Learning loss (Eq. 10, extended with DC penalty).
 
     L_SL = MAE(pg_hat, pg_star) + lambda * psi(pg_hat)
-           + mu * M_TH * ||xi||_1 + M_DC * ||B*theta - net||_1
     """
     n_gen = pg_hat.shape[1]
 
@@ -125,21 +132,14 @@ def loss_sl(pg_hat, theta, pg_star, pd, D, cost_coef, pg_max, r_max, R,
     else:
         mae = torch.tensor(0.0, device=pg_hat.device, dtype=pg_hat.dtype)
 
-    # Thermal violations (from explicit theta)
-    xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
-    thermal_pen = mu * M_TH * xi.sum(dim=-1).mean()
+    psi = compute_constraint_penalty(
+        pg_hat, theta, pd, D, pg_max, r_max, R,
+        b_branch_t, branch_from, branch_to, branch_rate_t,
+        B_bus_t, gen_bus_idx_t, problem_type
+    )
+    constraint_pen = lam * psi.mean()
 
-    # DC power flow residual
-    dc_pen = M_DC * compute_dc_violations(theta, pg_hat, pd, B_bus_t, gen_bus_idx_t).mean()
-
-    # Constraint penalty (zero for feasible models)
-    if is_feasible_model:
-        constraint_pen = 0.0
-    else:
-        psi = compute_constraint_penalty(pg_hat, D, pg_max, r_max, R, problem_type)
-        constraint_pen = lam * psi.mean()
-
-    return mae + constraint_pen + thermal_pen + dc_pen
+    return mae + constraint_pen
 
 
 def loss_ssl(pg_hat, theta, pd, D, cost_coef, pg_max, r_max, R,
@@ -149,27 +149,19 @@ def loss_ssl(pg_hat, theta, pd, D, cost_coef, pg_max, r_max, R,
     """
     Self-Supervised Learning loss (Eq. 12, extended with DC penalty).
 
-    L_SSL = c(pg_hat) + M_TH * ||xi||_1 + M_DC * ||B*theta - net||_1
-            + lambda * psi(pg_hat)
+    L_SSL = c(pg_hat) + lambda * psi(pg_hat)
     """
     # Generation cost
     gen_cost = (cost_coef.unsqueeze(0) * pg_hat).sum(dim=-1).mean()
 
-    # Thermal violations (from explicit theta)
-    xi = compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t)
-    thermal_pen = M_TH * xi.sum(dim=-1).mean()
+    psi = compute_constraint_penalty(
+        pg_hat, theta, pd, D, pg_max, r_max, R,
+        b_branch_t, branch_from, branch_to, branch_rate_t,
+        B_bus_t, gen_bus_idx_t, problem_type
+    )
+    constraint_pen = lam * psi.mean()
 
-    # DC power flow residual
-    dc_pen = M_DC * compute_dc_violations(theta, pg_hat, pd, B_bus_t, gen_bus_idx_t).mean()
-
-    # Constraint penalty (zero for feasible models)
-    if is_feasible_model:
-        constraint_pen = 0.0
-    else:
-        psi = compute_constraint_penalty(pg_hat, D, pg_max, r_max, R, problem_type)
-        constraint_pen = lam * psi.mean()
-
-    return gen_cost + thermal_pen + dc_pen + constraint_pen
+    return gen_cost + constraint_pen
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +217,8 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
                 lr=1e-2, weight_decay=1e-6,
                 batch_size_train=64, batch_size_eval=256,
                 max_epochs=500, patience=20, lr_patience=10,
-                max_time_min=150, device="cpu", verbose=True):
+                max_time_min=150, device="cpu", verbose=True,
+                epoch_callback=None):
     """
     Train the model with SL or SSL.
 
@@ -242,7 +235,6 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
         dict with training history (losses, best epoch, etc.)
     """
     is_feasible = hasattr(model, "power_balance") and model.power_balance is not None
-    n_bus = case["n_bus"]
 
     train_loader = DataLoader(datasets["train"], batch_size=batch_size_train, shuffle=True)
     val_loader = DataLoader(datasets["val"], batch_size=batch_size_eval, shuffle=False)
@@ -326,7 +318,7 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
                         cost_coef_t, pg_max_t, r_max_t, R_b,
                         b_branch_t, branch_from, branch_to, branch_rate_t,
                         B_bus_t, gen_bus_idx_t,
-                        lam, mu, problem_type, is_feasible,
+                        1.0, 1.0, problem_type, is_feasible,
                     )
                 else:
                     loss = loss_ssl(
@@ -334,7 +326,7 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
                         cost_coef_t, pg_max_t, r_max_t, R_b,
                         b_branch_t, branch_from, branch_to, branch_rate_t,
                         B_bus_t, gen_bus_idx_t,
-                        lam, problem_type, is_feasible,
+                        1.0, problem_type, is_feasible,
                     )
                 val_losses.append(loss.item())
 
@@ -354,6 +346,9 @@ def train_model(model, datasets, case, problem_type, mode="ssl",
         if verbose and epoch % 5 == 0:
             print(f"  Epoch {epoch:3d} | train {avg_train:.6f} | val {avg_val:.6f} | "
                   f"lr {optimizer.param_groups[0]['lr']:.1e} | no_improve {epochs_no_improve}")
+
+        if epoch_callback is not None:
+            epoch_callback(epoch, avg_train, avg_val, (time.time() - start_time) / 60.0)
 
         if epochs_no_improve >= patience:
             if verbose:

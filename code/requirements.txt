@@ -1,4 +1,5 @@
 numpy
 scipy
 torch
-cvxpy
+ray[tune]
+optuna
