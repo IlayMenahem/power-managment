@@ -422,9 +422,9 @@ def train_model(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            train_losses.append(loss.item())
+            train_losses.append(loss.detach())
 
-        avg_train = np.mean(train_losses)
+        avg_train = torch.stack(train_losses).mean().item()
         history["train_loss"].append(avg_train)
 
         # --- Validation ---
@@ -482,9 +482,9 @@ def train_model(
                         problem_type,
                         is_feasible,
                     )
-                val_losses.append(loss.item())
+                val_losses.append(loss.detach())
 
-        avg_val = np.mean(val_losses)
+        avg_val = torch.stack(val_losses).mean().item()
         history["val_loss"].append(avg_val)
 
         scheduler.step(avg_val)
@@ -492,7 +492,7 @@ def train_model(
         # Early stopping
         if avg_val < best_val_loss:
             best_val_loss = avg_val
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
