@@ -18,8 +18,8 @@ from itertools import product
 import ray
 import torch
 
-NUM_TRIALS = 1
-NUM_PROCESSES = 6
+NUM_TRIALS = 25
+NUM_PROCESSES = 22
 
 
 def get_command(model: str, problem_type: str, case: str, ray_address: str) -> str:
