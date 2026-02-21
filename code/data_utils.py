@@ -73,6 +73,7 @@ def extract_case_data(raw):
     bus_ids = bus[:, 0].astype(int)
     bus_id_to_idx = {bid: i for i, bid in enumerate(bus_ids)}
     n_bus = len(bus_ids)
+    bus_types = bus[:, 1].astype(int)
     pd_ref = bus[:, 2] / baseMVA  # active power demand in p.u.
 
     # Generator data: keep only online generators with Pmax > 0
@@ -110,6 +111,7 @@ def extract_case_data(raw):
         "bus_ids": bus_ids,
         "bus_id_to_idx": bus_id_to_idx,
         "n_bus": n_bus,
+        "bus_types": bus_types,
         "pd_ref": pd_ref,
         "gen_bus_ids": gen_bus_ids,
         "gen_bus_idx": gen_bus_idx,
@@ -259,7 +261,7 @@ def generate_instances(case, n_instances, problem_type="ed", seed=42):
 # ---------------------------------------------------------------------------
 
 def solve_ed_highs(pd_vec, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-                   problem_type="ed", R_req=0.0, r_max=None, M_th=15.0):
+                   problem_type="ed", R_req=0.0, r_max=None, M_th=1500.0):
     """
     Solve a single ED/ED-R instance using scipy.optimize.linprog with HiGHS.
 
@@ -408,7 +410,7 @@ def _solve_one_highs(args):
 
 
 def solve_all_instances(instances, case, b_branch, B_reduced_csc, F_theta, C_g_r, non_slack,
-                        problem_type="ed", M_th=15.0, verbose=True, n_workers=4):
+                        problem_type="ed", M_th=1500.0, verbose=True, n_workers=4):
     """
     Solve all instances in parallel using HiGHS and return optimal dispatches
     and objective values.

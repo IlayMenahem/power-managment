@@ -21,11 +21,11 @@ from torch.utils.data import DataLoader, TensorDataset
 # Penalty / violation helpers
 # ---------------------------------------------------------------------------
 
-# MISO-based penalty prices (Section V-C), converted to $/p.u. with baseMVA=100
-M_TH = 1500.0    # thermal violation: 1500 $/MW -> 15 $/p.u.
-M_PB = 3500.0    # power balance: 3500 $/MW -> 35 $/p.u.
-M_RES = 1100.0   # reserve shortage: 1100 $/MW -> 11 $/p.u.
-M_DC = 3500.0    # DC power flow residual: same scale as power balance
+# MISO-based penalty prices (Section V-C).
+M_TH = 1500.0    # thermal violation: 1500 $/MW
+M_PB = 3500.0    # power balance: 3500 $/MW
+M_RES = 1100.0   # reserve shortage: 1100 $/MW
+M_DC = 3500.0    # DC power flow residual: 3500 $/MW
 
 
 def compute_thermal_violations(theta, b_branch_t, branch_from, branch_to, branch_rate_t):

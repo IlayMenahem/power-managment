@@ -15,6 +15,7 @@ Economic Dispatch" (arXiv 2304.11726v2), Sections III-IV.
 import torch
 import torch.nn as nn
 import scipy.sparse as sp
+import math
 
 EPS = 1e-8
 
@@ -155,7 +156,7 @@ class DNNBackbone(nn.Module):
     Input  : pd (n_bus,)
     Outputs:
         z     : (n_gen,) in [0, 1] via sigmoid  — generation fraction
-        theta : (n_bus,) raw (no activation)    — voltage angles
+        theta : (n_bus,) in [-30, 30] degrees (in radians) via sigmoid — voltage angles
     """
 
     def __init__(self, input_dim, output_dim, theta_dim, hidden_dim=256, n_layers=3, dropout=0.2):
@@ -174,7 +175,9 @@ class DNNBackbone(nn.Module):
 
     def forward(self, pd):
         h = self.shared(pd)
-        return self.pg_head(h), self.theta_head(h)
+        theta_raw = self.theta_head(h)
+        theta = (torch.sigmoid(theta_raw) - 0.5) * 2 * (30 * math.pi / 180)
+        return self.pg_head(h), theta
 
 
 # ---------------------------------------------------------------------------
@@ -350,5 +353,7 @@ class E2ELRDCModel(nn.Module):
             theta = compute_theta(pg, pd, self.DC_power_flow.B_pinv_t, self.DC_power_flow.gen_bus_idx_t)
         else:
             theta = self.DC_power_flow(pg, pd, theta)  # enforce DC power flow equations
+
+        theta = theta.clamp(-30 * math.pi / 180, 30 * math.pi / 180)
 
         return pg, theta
