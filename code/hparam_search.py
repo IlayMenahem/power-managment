@@ -10,7 +10,7 @@ Usage:
 Search space:
     n_layers    : [2, 3, 4]
     hidden_dim  : [128, 256, 512, 1024]
-    lam         : uniform [1e-4, 1.0]
+    lam         : [1.0]
     lr          : log-uniform [1e-4, 1e-2]
     batch_size  : [32, 64, 128, 256]
 
@@ -381,7 +381,7 @@ if __name__ == "__main__":
     search_space = {
         "n_layers": tune.choice([2, 3, 4]),
         "hidden_dim": tune.choice([128, 256, 512, 1024]),
-        "lam": tune.uniform(1e-4, 1.0),
+        "lam": tune.choice([1.0]),
         "lr": tune.loguniform(1e-4, 1e-2),
         "batch_size": tune.choice([32, 64, 128, 256]),
     }
