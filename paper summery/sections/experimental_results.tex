@@ -24,17 +24,17 @@ goc30k & 30,000 & 3,526 & 35,393 & Synthetic (Large Scale) \\
 \end{table}
 The authors generated many datapoints by perturbing the reference cases. They created two categories of datasets: ED (Economic Dispatch without reserves) and ED-R (with reserves).
 
-the ground truth solutions were computed using the Gurobi optimizer.
+The ground truth solutions were computed using the Gurobi optimizer.
 
 \subsection*{Implementation details}
 % loss functions
-the loss functions for supervised learning and self-supervised learning were:
+The loss functions for supervised learning and self-supervised learning were:
 \[\mathcal{L}^{SL}(\hat{p}, p^*) = \underbrace{\frac{1}{|\mathcal{G}|} ||\hat{p} - p^*||_1}_{\text{MAE of Dispatch}} + \underbrace{\mu M_{th} ||\xi_{th}(\hat{p})||}_{\text{Thermal Constraints}} + \underbrace{\lambda \psi(\hat{p})}_{\text{Hard Constraints}}\]
 \[\mathcal{L}^{SSL}(p^*) = \underbrace{c(p^*)}_{\text{Generation Cost}} + \underbrace{M_{th} \xi_{th}(p^*)}_{\text{Thermal Penalties}} + \underbrace{\lambda \psi(\hat{p})}_{\text{Hard Constraints}}\]
 \[\psi(\hat{p}) = M_{pb}|e^T\boldsymbol{d} - e^T\hat{p}| + M_{r}\xi_{r}(\hat{p})\]
 where the hyperparameters were: $M_{th} = 1500$, $M_{pb} = 3500$, $M_{r} = 1100$.
 
-The models are simple Feed Forward Neural Networks with a sigmoid activation function and the repair layers. the dataset was split into 40000/5000/5000 for training/validation/test. the optimization was done using the Adam optimizer. the learning rate was reduced by a factor of 10 when the validation loss stopped improving for 10 consecutive epochs. the training was stopped when the validation loss stopped improving for 20 consecutive epochs. the hyperparameters were optimized using grid search.
+The models are simple Feed Forward Neural Networks with a sigmoid activation function and the repair layers. The dataset was split into 40000/5000/5000 for training/validation/test. The optimization was done using the Adam optimizer. The learning rate was reduced by a factor of 10 when the validation loss stopped improving for 10 consecutive epochs. The training was stopped when the validation loss stopped improving for 20 consecutive epochs. The hyperparameters were optimized using grid search.
 
 \subsection*{Results}
-The results have shown that the E2ELR model preformed better than the other models in terms of accuracy on every dataset. The E2ELR models also took around the same time to infer a solution as the other models.
+The results have shown that the E2ELR model performed better than the other models in terms of accuracy on every dataset. The E2ELR models also took around the same time to infer a solution as a DNN and much faster than the Gurobi optimizer.

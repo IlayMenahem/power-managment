@@ -1,31 +1,28 @@
 \section*{The repair layers}
 
-To ensure that the neural network output respects the problem constraints, the paper proposes to add a sigmoid, and two repair layers to the end of the network. the sigmoid ensures that the generator output limits are respected, the first layer ensures that the power balance constraint is respected, and the second layer ensures that the reserve requirement is respected. in the paper it is shown that if there is a feasible solution, the repair layers will output a feasible solution.
+To ensure that the neural network output respects the problem constraints, the paper proposes to add a sigmoid, and two repair layers to the end of the network. Unlike prior end-to-end feasibility approaches such as DC3~\cite{donti2021dc3}, which completes solutions via iterative gradient steps, or LOOP-LC~\cite{Li2022_LOOP-LC}, which relies on a gauge mapping restricted to convex feasible sets, the proposed layers are non-iterative, closed-form, and differentiable. The sigmoid ensures that the generator output limits are respected, the first layer ensures that the power balance constraint is respected, and the second layer ensures that the reserve requirement is respected. In the paper, it is shown that if there is a feasible solution, the repair layers will output a feasible solution~\cite{Chen2023_E2ELR_arxiv}.
 
 \begin{figure}[ht]
     \centering
-    \includegraphics[width=0.85\linewidth]{figs/repair_layers.pdf}
+    \includegraphics[width=0.65\linewidth]{figs/repair_layers.pdf}
 \end{figure}
 
-The power balance repair layer $\mathcal{P}$ takes as input an initial dispatch vector $\pg \in \hypercube$ and outputs a dispatch vector $\mathbf{\tilde{p}}$ that also satisfies the power balance constraint.
+The power balance repair layer $\mathcal{P}$ takes as input an initial dispatch vector $\pg \in \hypercube$ and outputs a dispatch vector $\mathbf{\tilde{p}}$ that also satisfies the power balance constraint. This is done by scaling the input vector $\pg$ up or down, to fulfill the power balance constraint. the output is given by:
 
-\input{figs/power_balance_repair_layer.tex}
-
-the output is given by:
+%\input{figs/power_balance_repair_layer.tex}
 
 \begin{align*}
-    \mathcal{P}(\pg) &= \begin{cases}
-        (1 - \eta^{\uparrow}) \pg + \eta^{\uparrow} \pgmax & \text{if } \mathbf{e}^{\top} \pg < \mathbf{e}^{\top} \pd \\
-        (1 - \eta^{\downarrow}) \pg + \eta^{\downarrow} \mathbf{0} & \text{if } \mathbf{e}^{\top} \pg > \mathbf{e}^{\top} \pd
-    \end{cases} \\
-    \eta^{\uparrow} &= \frac{\mathbf{e}^{\top} \pd - \mathbf{e}^{\top} \pg}{\mathbf{e}^{\top} \pgmax - \mathbf{e}^{\top} \pg}, \quad
-    \eta^{\downarrow} = \frac{\mathbf{e}^{\top} \pg - \mathbf{e}^{\top} \pd}{\mathbf{e}^{\top} \pg - \mathbf{e}^{\top} \mathbf{0}}
+   \mathcal{P}(\pg) &= \begin{cases}
+       (1 - \eta^{\uparrow}) \pg + \eta^{\uparrow} \pgmax & \text{if } \mathbf{e}^{\top} \pg < \mathbf{e}^{\top} \pd \\
+       (1 - \eta^{\downarrow}) \pg + \eta^{\downarrow} \mathbf{0} & \text{if } \mathbf{e}^{\top} \pg > \mathbf{e}^{\top} \pd
+   \end{cases} \\
+   \eta^{\uparrow} &= \frac{\mathbf{e}^{\top} \pd - \mathbf{e}^{\top} \pg}{\mathbf{e}^{\top} \pgmax - \mathbf{e}^{\top} \pg}, \quad
+   \eta^{\downarrow} = \frac{\mathbf{e}^{\top} \pg - \mathbf{e}^{\top} \pd}{\mathbf{e}^{\top} \pg - \mathbf{e}^{\top} \mathbf{0}}
 \end{align*}
 
-The reserve repair layer $\mathcal{R}$ takes as input an initial dispatch vector $\pg \in \hypersimplex{D}$ and outputs a dispatch vector $\mathbf{\tilde{p}}$ that also satisfies the reserve requirement.
+The reserve repair layer $\mathcal{R}$ takes as input an initial dispatch vector $\pg \in \hypersimplex{D}$ and outputs a dispatch vector $\mathbf{\tilde{p}}$ that also satisfies the reserve requirement. This is done by decreasing the output of generators which have more room to fully utilize their reserve capacity, and increasing the output of generators which don't have room to fully utilize their reserve capacity. Then there are adjustments to ensure that the power balance constraint is still respected. the output is given by the following algorithm:
+%The following figure illustrates the reserve repair layer. 
 
-\input{figs/reserve_repair_layer.tex}
-
-the output is given by the following algorithm:
+% \input{figs/reserve_repair_layer.tex}
 \input{figs/reserve_repair_layer_algorithm.tex}
 

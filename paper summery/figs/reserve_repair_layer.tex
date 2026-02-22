@@ -1,6 +1,6 @@
 \begin{figure}[ht]
     \centering
-    \resizebox{0.8\columnwidth}{!}{
+    \resizebox{0.6\columnwidth}{!}{
     \begin{tikzpicture}[x=4cm,y=4cm]
         % X Axis
         \draw[black,->] (-0.1, 0.0) -- (1.25, 0.0);
@@ -45,61 +45,7 @@
             \node[right] at (1.8, 0.5) {$\min\{\bar{r}_{1}, \bar{p}_{1} \, {-} \, p_{1}\}$};
             \node[right] at (1.8, 0.4) {$+\min\{\bar{r}_{2}, \bar{p}_{2} \, {-} \, p_{2}\} \geq R$};
     \end{tikzpicture}
-    }\\
-    \hfill
-    \resizebox{0.4\columnwidth}{!}{
-        \begin{tikzpicture}[x=4cm,y=4cm]
-            % X Axis
-            \draw[black,->] (-0.05, 0) -- (1.25, 0);
-            \node[below right] at (1.25, 0) {$p_{1}$};
-            \node[below] at (1, 0) {$\bar{p}_{1}$};
-            
-            % Y axis
-            \draw[black,->] (0, -0.05) -- (0, 0.75);
-            \node[above left] at (0, 0.75) {$r_{1}$};
-            \node[left] at (0, 0.5) {$\bar{r}_{1}$};
-            
-            % Domain of (p, r)
-            \fill[blue!50!white, fill opacity=0.3] (0,0) -- (0, 0.5) -- (0.5, 0.5) -- (1,0) -- cycle;
-            % Inactive constraints
-            \draw[black] (0,0) -- (0, 0.5) -- (0.5,0.5) -- (1,0) -- cycle;
-            % Active constraint (max reserve)
-            \draw[red, line width=1pt] (0.0, 0.5) -- (0.5, 0.5);
-            
-            % Initial and feasible point
-            \node[circle,draw=black, fill=black, inner sep=0pt,minimum size=3pt] (ppred) at (0.15, 0.5) {};
-            \node[circle,draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (pfeas) at (0.4, 0.5) {};
-            \draw[-stealth] (ppred.south) to [out=-60,in=-120] (pfeas.south);
-        \end{tikzpicture}
-        }
-    \hfill
-    \resizebox{0.4\columnwidth}{!}{
-        \begin{tikzpicture}[x=4cm,y=4cm]
-            % X Axis
-            \draw[black,->] (-0.05, 0) -- (1.25, 0);
-            \node[below right] at (1.25, 0) {$p_{2}$};
-            \node[below] at (1, 0) {$\bar{p}_{2}$};
-            
-            % Y axis
-            \draw[black,->] (0, -0.05) -- (0, 0.75);
-            \node[above left] at (0, 0.75) {$r_{2}$};
-            \node[left] at (0, 0.5) {$\bar{r}_{2}$};
-            
-            % Domain of (p, r)
-            \fill[blue!50!white, fill opacity=0.3] (0,0) -- (0, 0.5) -- (0.5, 0.5) -- (1,0) -- cycle;
-            % Inactive constraints
-            \draw[black] (0,0) -- (0, 0.5) -- (0.5, 0.5) -- (1,0) -- cycle;
-            % Active constraint
-            \draw[red, line width=1pt] (0.5, 0.5) -- (1.0, 0.0);
-            
-            % Initial and feasible point
-            \node[circle,draw=black, fill=black, inner sep=0pt,minimum size=3pt] (ppred) at (0.95, 0.05) {};
-            \node[circle,draw=blue, fill=blue, inner sep=0pt,minimum size=3pt] (pfeas) at (0.7, 0.3) {};
-            \draw[-stealth] (ppred.west) to [out=180,in=-90] (pfeas.south);
-        \end{tikzpicture}
-        }
-    \caption{Illustration of the reserve feasibility layer for $\mathbf{\bar{p}} {=} (1, 1)$, $\mathbf{\bar{r}}{=}(0.5, 0.5)$, $D {=} 1.1$, $R{=}0.8$ and the initial prediction $\pg {=} (0.15, 0.95)$. The recovered feasible dispatch is $\mathbf{\tilde{p}} {=} (0.4, 0.7)$.
-    Top: effect of the layer in the $(p_{1}, p_{2})$ space.
-    Bottom: effect of the layer on each generator (individually). The active constraint is shown in red. Generator $1$ is in $\mathcal{G}^{\uparrow}$ and generator 2 is in $\mathcal{G}^{\downarrow}$.}
+    }
+    \caption{Illustration of the reserve feasibility layer for $\mathbf{\bar{p}} {=} (1, 1)$, $\mathbf{\bar{r}}{=}(0.5, 0.5)$, $D {=} 1.1$, $R{=}0.8$ and the initial prediction $\pg {=} (0.15, 0.95)$. The recovered feasible dispatch is $\mathbf{\tilde{p}} {=} (0.4, 0.7)$.}
     \label{fig:feasibility_recovery:reserve}
 \end{figure}
