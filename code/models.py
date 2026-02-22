@@ -184,8 +184,7 @@ class DNNBackbone(nn.Module):
 
     def forward(self, pd):
         h = self.shared(pd)
-        theta_raw = self.theta_head(h)
-        theta = (torch.sigmoid(theta_raw) - 0.5) * 2 * (30 * math.pi / 180)
+        theta = self.theta_head(h)
         return self.pg_head(h), theta
 
 
@@ -412,7 +411,5 @@ class E2ELRDCModel(nn.Module):
             )
         else:
             theta = self.DC_power_flow(pg, pd, theta)  # enforce DC power flow equations
-
-        theta = theta.clamp(-30 * math.pi / 180, 30 * math.pi / 180)
 
         return pg, theta

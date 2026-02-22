@@ -551,14 +551,23 @@ def evaluate_model(
     batch_size=256,
     tol=1e-4,
     device="cpu",
+    mode="ssl",
+    lam=1.0,
+    mu=1.0,
 ):
     """
     Evaluate model on a dataset and compute:
+      - Test loss (using the same loss function as during training)
       - Mean optimality gap
       - Feasibility rate (% satisfying all hard constraints)
       - Mean power balance violation
       - Mean reserve shortage (for ED-R)
       - Mean DC power flow violation
+
+    Args:
+        mode : "sl" or "ssl" — selects which loss function to apply
+        lam  : constraint penalty weight (normalised to 1.0, matching validation)
+        mu   : thermal penalty weight for SL (equals lam per paper)
 
     Returns dict with metrics.
     """
@@ -566,74 +575,123 @@ def evaluate_model(
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     model.eval()
 
+    all_test_losses = []
     all_gaps = []
     all_pb_viol = []
     all_res_short = []
     all_dc_viol = []
     all_feasible = []
 
-    for batch in loader:
-        pd_b, R_b, pg_star_b, obj_star_b = batch
-        D_b = pd_b.sum(dim=-1, keepdim=True)
+    with torch.no_grad():
+        for batch in loader:
+            pd_b, R_b, pg_star_b, obj_star_b = batch
+            D_b = pd_b.sum(dim=-1, keepdim=True)
 
-        if is_feasible:
-            pg_hat, theta = model(pd_b, D_b, R_b)
-        else:
-            pg_hat, theta = model(pd_b)
+            if is_feasible:
+                pg_hat, theta = model(pd_b, D_b, R_b)
+            else:
+                pg_hat, theta = model(pd_b)
 
-        # --- Compute penalized objective for predictions ---
-        gen_cost = (cost_coef_t.unsqueeze(0) * pg_hat).sum(dim=-1)
+            # --- Test loss ---
+            if mode == "sl":
+                batch_loss = loss_sl(
+                    pg_hat,
+                    theta,
+                    pg_star_b,
+                    pd_b,
+                    D_b,
+                    cost_coef_t,
+                    pg_max_t,
+                    r_max_t,
+                    R_b,
+                    b_branch_t,
+                    branch_from,
+                    branch_to,
+                    branch_rate_t,
+                    B_bus_t,
+                    gen_bus_idx_t,
+                    lam,
+                    mu,
+                    problem_type,
+                    is_feasible,
+                )
+            else:
+                batch_loss = loss_ssl(
+                    pg_hat,
+                    theta,
+                    pd_b,
+                    D_b,
+                    cost_coef_t,
+                    pg_max_t,
+                    r_max_t,
+                    R_b,
+                    b_branch_t,
+                    branch_from,
+                    branch_to,
+                    branch_rate_t,
+                    B_bus_t,
+                    gen_bus_idx_t,
+                    lam,
+                    problem_type,
+                    is_feasible,
+                )
+            all_test_losses.append(batch_loss.detach())
 
-        xi = compute_thermal_violations(
-            theta, b_branch_t, branch_from, branch_to, branch_rate_t
-        )
-        thermal = M_TH * xi.sum(dim=-1)
+            # --- Compute penalized objective for predictions ---
+            gen_cost = (cost_coef_t.unsqueeze(0) * pg_hat).sum(dim=-1)
 
-        pb_viol = compute_power_balance_violation(pg_hat, D_b).squeeze(-1)
-        pb_pen = M_PB * pb_viol
+            xi = compute_thermal_violations(
+                theta, b_branch_t, branch_from, branch_to, branch_rate_t
+            )
+            thermal = M_TH * xi.sum(dim=-1)
 
-        dc_viol = compute_dc_violations(
-            theta, pg_hat, pd_b, B_bus_t, gen_bus_idx_t
-        ).squeeze(-1)
-        dc_pen = M_DC * dc_viol
+            pb_viol = compute_power_balance_violation(pg_hat, D_b).squeeze(-1)
+            pb_pen = M_PB * pb_viol
 
-        if problem_type == "edr":
-            res_short = compute_reserve_shortage(
-                pg_hat, pg_max_t, r_max_t, R_b
+            dc_viol = compute_dc_violations(
+                theta, pg_hat, pd_b, B_bus_t, gen_bus_idx_t
             ).squeeze(-1)
-            res_pen = M_RES * res_short
-        else:
-            res_short = torch.zeros_like(pb_viol)
-            res_pen = torch.zeros_like(pb_viol)
+            dc_pen = M_DC * dc_viol
 
-        z_hat = gen_cost + thermal + pb_pen + res_pen + dc_pen
-        z_star = obj_star_b
+            if problem_type == "edr":
+                res_short = compute_reserve_shortage(
+                    pg_hat, pg_max_t, r_max_t, R_b
+                ).squeeze(-1)
+                res_pen = M_RES * res_short
+            else:
+                res_short = torch.zeros_like(pb_viol)
+                res_pen = torch.zeros_like(pb_viol)
 
-        # Optimality gap (only for instances with valid ground truth)
-        valid = ~torch.isnan(z_star)
-        gaps = torch.where(
-            valid,
-            (z_hat - z_star) / z_star.abs().clamp(min=1e-8),
-            torch.full_like(z_hat, float("nan")),
-        )
+            z_hat = gen_cost + thermal + pb_pen + res_pen + dc_pen
+            z_star = obj_star_b
 
-        # Feasibility check
-        bounds_ok = (pg_hat >= -tol).all(dim=-1) & (
-            pg_hat <= pg_max_t.unsqueeze(0) + tol
-        ).all(dim=-1)
-        pb_ok = pb_viol < tol
-        dc_ok = dc_viol < tol
-        if problem_type == "edr":
-            res_ok = res_short < tol
-            feasible = bounds_ok & pb_ok & dc_ok & res_ok
-        else:
-            feasible = bounds_ok & pb_ok & dc_ok
+            # Optimality gap (only for instances with valid ground truth)
+            valid = ~torch.isnan(z_star)
+            gaps = torch.where(
+                valid,
+                (z_hat - z_star) / z_star.abs().clamp(min=1e-8),
+                torch.full_like(z_hat, float("nan")),
+            )
 
-        all_gaps.append(gaps)
-        all_pb_viol.append(pb_viol)
-        all_res_short.append(res_short)
-        all_dc_viol.append(dc_viol)
-        all_feasible.append(feasible)
+            # Feasibility check
+            bounds_ok = (pg_hat >= -tol).all(dim=-1) & (
+                pg_hat <= pg_max_t.unsqueeze(0) + tol
+            ).all(dim=-1)
+            pb_ok = pb_viol < tol
+            dc_ok = dc_viol < tol
+            if problem_type == "edr":
+                res_ok = res_short < tol
+                feasible = bounds_ok & pb_ok & dc_ok & res_ok
+            else:
+                feasible = bounds_ok & pb_ok & dc_ok
+
+            all_gaps.append(gaps)
+            all_pb_viol.append(pb_viol)
+            all_res_short.append(res_short)
+            all_dc_viol.append(dc_viol)
+            all_feasible.append(feasible)
+
+    test_loss = torch.stack(all_test_losses).mean().item()
 
     all_gaps = torch.cat(all_gaps).cpu().numpy()
     all_pb_viol = torch.cat(all_pb_viol).cpu().numpy()
@@ -650,6 +708,7 @@ def evaluate_model(
         sgm_gap = float("nan")
 
     results = {
+        "test_loss": test_loss,
         "mean_gap_pct": 100.0 * np.nanmean(valid_gaps)
         if len(valid_gaps) > 0
         else float("nan"),

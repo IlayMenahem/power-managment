@@ -392,11 +392,15 @@ if __name__ == "__main__":
         batch_size=256,
         tol=1e-4,
         device=device,
+        mode=args.mode,
+        lam=lam,
+        mu=mu,
     )
 
     print(
         f"\n--- Results ({args.model.upper()}, {args.mode.upper()}, {args.problem.upper()}) ---"
     )
+    print(f"  Test Loss:               {results['test_loss']:.6f}")
     if obj_star is not None:
         print(f"  Mean Optimality Gap:     {results['mean_gap_pct']:.4f}%")
         print(f"  SGM Optimality Gap:      {results['sgm_gap_pct']:.4f}%")
@@ -407,6 +411,7 @@ if __name__ == "__main__":
     print(f"  Mean PB Violation:       {results['mean_pb_violation_pu']:.6f} p.u.")
     print(f"  Mean Reserve Shortage:   {results['mean_reserve_shortage_pu']:.6f} p.u.")
     print(f"  Mean DC Violation:       {results['mean_dc_violation_pu']:.6f} p.u.")
+    print(f"  Best Val Loss:           {history['best_val_loss']:.6f}")
     print(f"  Training Time:           {history['training_time_min']:.1f} min")
 
     if args.results_file is not None:
