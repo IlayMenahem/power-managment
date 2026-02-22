@@ -10,6 +10,7 @@ Reference: arXiv 2304.11726v2
 """
 
 import argparse
+import json
 import os
 import time
 
@@ -115,6 +116,12 @@ if __name__ == "__main__":
         default="checkpoints",
         help="Directory for saving/loading ground truth solutions",
     )
+    parser.add_argument(
+        "--results_file",
+        type=str,
+        default=None,
+        help="Optional path to save evaluation results as JSON (e.g. results/run.json)",
+    )
 
     args = parser.parse_args()
 
@@ -194,37 +201,42 @@ if __name__ == "__main__":
         f"gt_{case_name}_{args.problem}_n{args.n_instances}_s{args.seed}.npz",
     )
 
-    if args.mode == "sl" or not args.skip_solve:
-        # Try loading ground truth from checkpoint
-        if os.path.isfile(gt_checkpoint_path):
-            print(f"\nLoading ground truth from checkpoint: {gt_checkpoint_path}")
-            gt_data = np.load(gt_checkpoint_path)
-            pg_star = gt_data["pg_star"]
-            obj_star = gt_data["obj_star"]
-            print(f"  Loaded pg_star {pg_star.shape}, obj_star {obj_star.shape}")
-        else:
-            print("\nSolving instances with CVXPY...")
-            t0 = time.time()
-            pg_star, obj_star = solve_all_instances(
-                instances,
-                case,
-                b_branch,
-                B_reduced_csc,
-                F_theta,
-                C_g_r,
-                non_slack,
-                problem_type=args.problem,
-                M_th=15.0,
-                verbose=True,
+    # Always try the checkpoint first — it enables full evaluation even with --skip_solve
+    if os.path.isfile(gt_checkpoint_path):
+        print(f"\nLoading ground truth from checkpoint: {gt_checkpoint_path}")
+        gt_data = np.load(gt_checkpoint_path)
+        pg_star = gt_data["pg_star"]
+        obj_star = gt_data["obj_star"]
+        print(f"  Loaded pg_star {pg_star.shape}, obj_star {obj_star.shape}")
+
+        valid = ~np.isnan(obj_star)
+        print(f"  Valid solutions: {valid.sum()}/{len(obj_star)}")
+        if valid.any():
+            print(
+                f"  Objective range: [{obj_star[valid].min():.2f}, {obj_star[valid].max():.2f}]"
             )
-            print(f"  Solving done in {(time.time() - t0) / 60:.1f} min")
+    elif args.mode == "sl" or not args.skip_solve:
+        print("\nSolving instances with CVXPY...")
+        t0 = time.time()
+        pg_star, obj_star = solve_all_instances(
+            instances,
+            case,
+            b_branch,
+            B_reduced_csc,
+            F_theta,
+            C_g_r,
+            non_slack,
+            problem_type=args.problem,
+            M_th=15.0,
+            verbose=True,
+        )
+        print(f"  Solving done in {(time.time() - t0) / 60:.1f} min")
 
-            # Save ground truth checkpoint
-            os.makedirs(args.checkpoint_dir, exist_ok=True)
-            np.savez(gt_checkpoint_path, pg_star=pg_star, obj_star=obj_star)
-            print(f"  Ground truth saved to: {gt_checkpoint_path}")
+        # Save ground truth checkpoint
+        os.makedirs(args.checkpoint_dir, exist_ok=True)
+        np.savez(gt_checkpoint_path, pg_star=pg_star, obj_star=obj_star)
+        print(f"  Ground truth saved to: {gt_checkpoint_path}")
 
-        # Report stats
         valid = ~np.isnan(obj_star)
         print(f"  Valid solutions: {valid.sum()}/{len(obj_star)}")
         if valid.any():
@@ -232,7 +244,10 @@ if __name__ == "__main__":
                 f"  Objective range: [{obj_star[valid].min():.2f}, {obj_star[valid].max():.2f}]"
             )
     else:
-        print("\nSkipping LP solving (SSL mode with --skip_solve).")
+        print("\nNo ground truth checkpoint found and --skip_solve is set.")
+        print(
+            "  Feasibility metrics will be reported; optimality gap will be unavailable."
+        )
 
     # -----------------------------------------------------------------------
     # 5. Build datasets
@@ -356,43 +371,65 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
     # 9. Evaluate
     # -----------------------------------------------------------------------
+    print(f"\n{'=' * 60}")
+    print("Evaluating on test set")
+    print(f"{'=' * 60}")
+
+    results = evaluate_model(
+        model,
+        datasets["test"],
+        case,
+        args.problem,
+        b_branch_t,
+        branch_from,
+        branch_to,
+        branch_rate_t,
+        B_bus_t,
+        gen_bus_idx_t,
+        cost_coef_t,
+        pg_max_t,
+        r_max_t,
+        batch_size=256,
+        tol=1e-4,
+        device=device,
+    )
+
+    print(
+        f"\n--- Results ({args.model.upper()}, {args.mode.upper()}, {args.problem.upper()}) ---"
+    )
     if obj_star is not None:
-        print(f"\n{'=' * 60}")
-        print("Evaluating on test set")
-        print(f"{'=' * 60}")
-
-        results = evaluate_model(
-            model,
-            datasets["test"],
-            case,
-            args.problem,
-            b_branch_t,
-            branch_from,
-            branch_to,
-            branch_rate_t,
-            B_bus_t,
-            gen_bus_idx_t,
-            cost_coef_t,
-            pg_max_t,
-            r_max_t,
-            batch_size=256,
-            tol=1e-4,
-            device=device,
-        )
-
-        print(
-            f"\n--- Results ({args.model.upper()}, {args.mode.upper()}, {args.problem.upper()}) ---"
-        )
         print(f"  Mean Optimality Gap:     {results['mean_gap_pct']:.4f}%")
         print(f"  SGM Optimality Gap:      {results['sgm_gap_pct']:.4f}%")
-        print(f"  Feasibility Rate:        {results['feasibility_rate_pct']:.2f}%")
-        print(f"  Mean PB Violation:       {results['mean_pb_violation_pu']:.6f} p.u.")
-        print(
-            f"  Mean Reserve Shortage:   {results['mean_reserve_shortage_pu']:.6f} p.u."
-        )
-        print(f"  Mean DC Violation:       {results['mean_dc_violation_pu']:.6f} p.u.")
-        print(f"  Training Time:           {history['training_time_min']:.1f} min")
     else:
-        print("\nNo ground truth available — skipping evaluation metrics.")
+        print("  Mean Optimality Gap:     N/A (no ground truth)")
+        print("  SGM Optimality Gap:      N/A (no ground truth)")
+    print(f"  Feasibility Rate:        {results['feasibility_rate_pct']:.2f}%")
+    print(f"  Mean PB Violation:       {results['mean_pb_violation_pu']:.6f} p.u.")
+    print(f"  Mean Reserve Shortage:   {results['mean_reserve_shortage_pu']:.6f} p.u.")
+    print(f"  Mean DC Violation:       {results['mean_dc_violation_pu']:.6f} p.u.")
+    print(f"  Training Time:           {history['training_time_min']:.1f} min")
+
+    if args.results_file is not None:
+        results = {k: float(v) for k, v in results.items()}
+
+        run_record = {
+            "case": args.case,
+            "model": args.model,
+            "problem": args.problem,
+            "mode": args.mode,
+            "config": {
+                "n_layers": args.n_layers,
+                "hidden_dim": args.hidden_dim,
+                "lr": args.lr,
+                "batch_size": args.batch_size,
+            },
+            "training_time_min": history["training_time_min"],
+            "best_val_loss": history["best_val_loss"],
+            "results": results,
+        }
+        os.makedirs(os.path.dirname(args.results_file) or ".", exist_ok=True)
+        with open(args.results_file, "w") as f:
+            json.dump(run_record, f, indent=2)
+        print(f"\nResults saved to: {args.results_file}")
 
     print("\nDone.")

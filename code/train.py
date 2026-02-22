@@ -261,7 +261,7 @@ def build_datasets(instances, pg_star, obj_star, case, problem_type, device="cpu
         obj_all = torch.tensor(obj_star, dtype=torch.float32, device=device)
     else:
         pg_all = torch.zeros(n, case["n_gen"], dtype=torch.float32, device=device)
-        obj_all = torch.zeros(n, dtype=torch.float32, device=device)
+        obj_all = torch.full((n,), float("nan"), dtype=torch.float32, device=device)
 
     def _slice(t, s, e):
         return t[s:e]
@@ -614,7 +614,7 @@ def evaluate_model(
         gaps = torch.where(
             valid,
             (z_hat - z_star) / z_star.abs().clamp(min=1e-8),
-            torch.zeros_like(z_hat),
+            torch.full_like(z_hat, float("nan")),
         )
 
         # Feasibility check
