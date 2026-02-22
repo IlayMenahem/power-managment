@@ -1,0 +1,23 @@
+{
+  "case": "data/pglib_opf_case300_ieee.m",
+  "model": "e2elr",
+  "problem": "edr",
+  "mode": "ssl",
+  "config": {
+    "n_layers": 2,
+    "hidden_dim": 256,
+    "lr": 0.0008566092687697293,
+    "batch_size": 256
+  },
+  "training_time_min": 1.78537810643514,
+  "best_val_loss": 42427.7578125,
+  "results": {
+    "test_loss": 42292.6796875,
+    "mean_gap_pct": 736.7034301757812,
+    "sgm_gap_pct": 730.5231323242188,
+    "feasibility_rate_pct": 0.0,
+    "mean_pb_violation_pu": 6.057739483367186e-06,
+    "mean_reserve_shortage_pu": 0.0,
+    "mean_dc_violation_pu": 10.043084144592285
+  }
+}

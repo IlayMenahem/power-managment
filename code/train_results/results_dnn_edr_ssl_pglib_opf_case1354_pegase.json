@@ -1,0 +1,23 @@
+{
+  "case": "data/pglib_opf_case1354_pegase.m",
+  "model": "dnn",
+  "problem": "edr",
+  "mode": "ssl",
+  "config": {
+    "n_layers": 4,
+    "hidden_dim": 512,
+    "lr": 0.0001745825331956652,
+    "batch_size": 64
+  },
+  "training_time_min": 10.795123147964478,
+  "best_val_loss": 318163.4375,
+  "results": {
+    "test_loss": 318414.4375,
+    "mean_gap_pct": 2748.708251953125,
+    "sgm_gap_pct": 2692.6982421875,
+    "feasibility_rate_pct": 0.0,
+    "mean_pb_violation_pu": 20.736019134521484,
+    "mean_reserve_shortage_pu": 0.0,
+    "mean_dc_violation_pu": 62.74672317504883
+  }
+}
