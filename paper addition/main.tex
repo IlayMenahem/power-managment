@@ -1,0 +1,166 @@
+\documentclass[12pt]{article}
+
+\usepackage{amsmath,amsfonts,amssymb,amsthm}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{booktabs} % for professional tables
+
+\usepackage{enumitem}
+
+\begin{document}
+
+\title{Addition to the paper: End-to-End Feasible Optimization Proxies for Large-Scale Economic Dispatch}
+
+\author{Ilay Menachem}
+
+\maketitle
+
+\section{Introduction}
+The paper proposes an End-to-End Learning and Repair (E2ELR) architecture for training optimization proxies for economic dispatch problems. That is, at the end of the network, there are repair layers that ensure power balance and reserve. As stated in the paper, if there is a feasible solution, the repair layers will output a feasible solution, and if there is no feasible solution, the repair layers will minimize in some sense the violation of the constraints. In this work, we merge the ED problem with the DC-OPF problem, and we propose to add a layer that will ensure the satisfaction of the DC power flow equations.
+
+\section{Problem Statement}
+
+Here is a problem statement that merges the problem statement in the paper with the DC-OPF problem statement.
+
+\begin{align}
+    \min_{\boldsymbol{p}, \boldsymbol{r}, \theta} c(\boldsymbol{p}) + penalty(\boldsymbol{p}, \boldsymbol{r}, \theta)
+\end{align}
+
+subject to
+\begin{enumerate}
+    \item $e^T\boldsymbol{p} = e^T\boldsymbol{d}$ (global power balance)
+    \item $e^T\boldsymbol{r} \geq R$ (minimum reserve requirement)
+    \item $\boldsymbol{p} + \boldsymbol{r} \leq \overline{\boldsymbol{p}}$ (generator output limits)
+    \item $0 \leq \boldsymbol{p} \leq \overline{\boldsymbol{p}}$ (generator output limits)
+    \item $0 \leq \boldsymbol{r} \leq \overline{\boldsymbol{r}}$ (generator reserve limits)
+    \item $\forall i, j$ $\frac{\theta_i - \theta_j}{x_{ij}} \leq \overline{P}_{ij}$ (line flow limits)
+    \item $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$ (DC power flow equations)
+\end{enumerate}
+and for models which don't guarantee the feasibility of solution, we add penalty terms to the cost function.
+\[penalty_{pb}(\hat{\boldsymbol{p}}) = M_{pb} \cdot |e^T\hat{\boldsymbol{p}} - e^T\boldsymbol{d}|\]
+\[penalty_{res}(\boldsymbol{r}) = M_{res} \cdot Relu(R - e^T \boldsymbol{r})\]
+\[penalty_{th}(\hat{\boldsymbol{p}}, \theta) = M_{th} \cdot \sum_{i,j} Relu(\frac{\theta_i - \theta_j}{x_{ij}} - \overline{P}_{ij})\]
+\[penalty_{dc}(\hat{\boldsymbol{p}}, \theta) = M_{dc} \cdot \|\boldsymbol{B}\theta - (\hat{\boldsymbol{p}} - \boldsymbol{d})\|_1\]
+\[penalty(\hat{\boldsymbol{p}}, \theta) = penalty_{pb}(\hat{\boldsymbol{p}}) + penalty_{res}(\hat{\boldsymbol{r}}) + penalty_{th}(\hat{\boldsymbol{p}}, \theta) + penalty_{dc}(\hat{\boldsymbol{p}}, \theta)\]
+
+As seen in the paper, conditions 2, 3, and 5 are equivalent to the condition $R \leq e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})$, and removing $\boldsymbol{r}$ from the optimization variables.
+
+Thus the problem can be rewritten as:
+\begin{align}
+    \min_{\boldsymbol{p}, \theta} c(\boldsymbol{p}) + penalty(\boldsymbol{p}, \theta)
+\end{align}
+subject to
+\begin{enumerate}
+    \item $0 \leq \boldsymbol{p} \leq \overline{\boldsymbol{p}}$ (generator output limits)
+    \item $e^T\boldsymbol{p} = e^T\boldsymbol{d}$ (global power balance)
+    \item $R \leq e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})$ (minimum reserve requirement)
+    \item $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$ (DC power flow equations)
+    \item $\forall i, j$ $\frac{\theta_i - \theta_j}{x_{ij}} \leq \overline{P}_{ij}$ (line flow limits)
+\end{enumerate}
+
+where the penalty of the reserve constraint is now:
+\[penalty_{res}(\hat{\boldsymbol{p}}) = M_{res} \cdot Relu(R - e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \hat{\boldsymbol{p}}))\]
+
+One should note that the penalty terms in the paper are all much greater than the cost of producing energy, that is to say the main concern of the neural network training process is to satisfy the constraints, and not to minimize the cost function. thus, it is easy to see why adding repair layers would yield a much more effective network.
+
+\section{Proposed Methods}
+All the networks in this work will also output voltage angles $\theta$.
+
+In this work, in addition to the repair layers introduced in E2ELR, we propose to add a theta repair layer for the equality constraint $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$. This repair layer will find the $\theta^*$ which satisfies the DC power flow equation, and is closest to the $\theta$ the neural network outputs. Finding $\theta^*$ can be viewed as the following optimization problem:
+\begin{align}
+    \min_{\theta'} \|\theta' - \theta\|_2^2 \quad \text{s.t.} \quad \boldsymbol{B} \theta' = \boldsymbol{p} - \boldsymbol{d}
+\end{align}
+The solution to this problem is the projection of $\theta$ onto the affine subspace $\{\theta' : \boldsymbol{B} \theta' = \boldsymbol{p} - \boldsymbol{d}\}$, which is given by:
+\begin{align}
+    \theta^* = \theta + \boldsymbol{B}^{\dagger}(\boldsymbol{p} - \boldsymbol{d} - \boldsymbol{B}\theta) \label{eq:theta_repair}
+\end{align}
+where $\boldsymbol{B}^{\dagger}$ is the Moore-Penrose pseudo-inverse of $\boldsymbol{B}$. $\boldsymbol{B}$ is a sparse matrix, thus the pseudo-inverse can be computed efficiently and matrix-vector multiplication with $\boldsymbol{B}^{\dagger}$ can also be computed efficiently; every operation in equation \ref{eq:theta_repair} can be implemented efficiently.
+
+
+\section{Experiments}
+\subsection{Experimental Setup}
+The experimental setup is the same as in the paper, except $\lambda = 1.0$, and for the hyperparameter tuning. The hyperparameter tuning is done using Optuna's hyperparameter optimization with 25 trials, and ASHAScheduler for early stopping. Additionally, due to the constraints added to the problem, we add the parameter $M_{dc} = 3500 \frac{\$}{MW}$ for the penalty term of the DC power flow equations, which is the same as the power balance parameter $M_{pb}$. The datasets which were tested for are ieee300, and pegase 1354.
+
+\subsection{Results}
+The hyperparameter tuning results are shown in Tables~\ref{tab:hparam_ieee300} and~\ref{tab:hparam_pegase1354}.
+
+\begin{table}[h]
+\centering
+\caption{Best hyperparameters found -- ieee300 dataset.}
+\label{tab:hparam_ieee300}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Hyperparameter} & \textbf{DNN} & \textbf{E2ELR} & \textbf{E2ELRDC} \\
+\midrule
+Layers      & 2 & 2 & 2 \\
+Hidden dim  & 512 & 256 & 128 \\
+Learning rate & $1.135 \times 10^{-4}$ & $8.566 \times 10^{-4}$ & $1.026 \times 10^{-4}$ \\
+Batch size  & 128 & 256 & 128 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Best hyperparameters found -- pegase1354 dataset.}
+\label{tab:hparam_pegase1354}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Hyperparameter} & \textbf{DNN} & \textbf{E2ELR} & \textbf{E2ELRDC} \\
+\midrule
+Layers      & 4 & 3 & 2 \\
+Hidden dim  & 512 & 128 & 128 \\
+Learning rate & $1.746 \times 10^{-4}$ & $7.141 \times 10^{-4}$ & $5.275 \times 10^{-3}$ \\
+Batch size  &  64 & 128 & 128 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+It is noteworthy that the more constrained the output of the network is, the fewer layers and smaller hidden dimension that is found to be optimal; this indicates that the extra parameters in the network are used to learn how to satisfy the constraints. For the pegase1354 dataset, the more constrained the output of the network is, the higher learning rate that is found to be optimal. The relation could be because the more constrained the output of the network is, the faster the network can learn, but this fact is not observed in the ieee300 dataset and thus it is not clear if it is a real relation or just a coincidence.
+
+Training the networks using the hyperparameters shown above, we get the following results for the test set shown in Tables~\ref{tab:results_ieee300} and~\ref{tab:results_pegase1354}.
+
+\begin{table}[h]
+\centering
+\caption{Test set results -- ieee300 dataset.}
+\label{tab:results_ieee300}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Gap (\%)} & \textbf{SGM Gap (\%)} & \textbf{PB Viol. (pu)} & \textbf{DC Viol. (pu)} \\
+\midrule
+DNN     & 603.86 & 595.75 & $5.50 \times 10^{-1}$ & 7.527 \\
+E2ELR   & 736.70 & 730.52 & $6.06 \times 10^{-6}$ & 10.043 \\
+E2ELRDC & \textbf{21.49}  & \textbf{19.94}  & $7.14 \times 10^{-6}$ & \textbf{0.182} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Test set results -- pegase1354 dataset.}
+\label{tab:results_pegase1354}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Gap (\%)} & \textbf{SGM Gap (\%)} & \textbf{PB Viol. (pu)} & \textbf{DC Viol. (pu)} \\
+\midrule
+DNN     & 2748.71 & 2692.70 & $2.07 \times 10^{1}$  & 62.747 \\
+E2ELR   & 2563.26 & 2551.00 & $2.08 \times 10^{-5}$ & 77.578 \\
+E2ELRDC & \textbf{362.46}  & \textbf{348.80}  & $1.98 \times 10^{-5}$ & \textbf{9.848} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These results show that adding the theta repair layer significantly reduces the DC power flow violation, and also significantly reduces the optimality gap. although the addition of the theta repair layer does help it is clear that the results still leave a lot to desire, and there is still a significant gap between the E2ELRDC model and the optimal solution. 
+
+\section{Conclusion}
+Although the idea proposed in the previous paper for using closed form repair layers is not easily extendable to new constraints. by understanding the structure of the constraints or adding constraints with new variables, it is possible to design additional and efficient repair layers, yet this will not always yield great results out of the box.
+
+
+\end{document}
+
+
