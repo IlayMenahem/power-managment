@@ -497,9 +497,10 @@ if __name__ == "__main__":
         for k, v in best_config.items():
             print(f"    {k:>12s} = {v}")
 
+        case_name = os.path.splitext(os.path.basename(args.case))[0]
         out_path = os.path.join(
             args.results_dir,
-            f"best_config_{model_name}_{args.problem}_{args.mode}.json",
+            f"best_config_{model_name}_{args.problem}_{args.mode}_{case_name}.json",
         )
         with open(out_path, "w") as f:
             json.dump(

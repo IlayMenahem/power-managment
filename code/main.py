@@ -310,7 +310,7 @@ if __name__ == "__main__":
         lam = args.lam
     else:
         if args.mode == "ssl":
-            lam = 0.1
+            lam = 1.0
         else:
             lam = 1e-4
     mu = lam  # mu = lambda for SL (per paper)

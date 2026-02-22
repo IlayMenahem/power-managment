@@ -19,7 +19,7 @@ import ray
 import torch
 
 NUM_TRIALS = 25
-NUM_PROCESSES = 22
+NUM_PROCESSES = 6
 
 
 def get_command(model: str, problem_type: str, case: str, ray_address: str) -> str:
@@ -43,7 +43,7 @@ def get_command(model: str, problem_type: str, case: str, ray_address: str) -> s
 
 if __name__ == "__main__":
     models = ["dnn", "e2elr", "e2elrdc"]
-    problem_types = ["ed", "edr"]
+    problem_types = ["edr"]
     cases = ["pglib_opf_case300_ieee.m", "pglib_opf_case1354_pegase.m"]
 
     ctx = ray.init(ignore_reinit_error=True)
