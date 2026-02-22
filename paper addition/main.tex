@@ -9,6 +9,7 @@
 \usepackage{graphicx}
 \usepackage{cite}
 \usepackage{booktabs} % for professional tables
+\usepackage{multicol}
 
 \usepackage{enumitem}
 
@@ -20,8 +21,44 @@
 
 \maketitle
 
+\section*{Notation}
+\begin{multicols}{2}
+
+\subsection*{Sets and Indices}
+\begin{itemize}
+    \item[$i, j \in \mathcal{N}$] Buses
+    \item[$(i,j) \in \mathcal{E}$] Branches (transmission lines)
+\end{itemize}
+
+\subsection*{Variables}
+\begin{itemize}
+    \item[$\boldsymbol{p}$] Generator active power dispatch vector
+    \item[$\boldsymbol{r}$] Generator reserve dispatch vector
+    \item[$\theta$] Bus voltage angle vector
+\end{itemize}
+
+\subsection*{Parameters}
+\begin{itemize}
+    \item[$\boldsymbol{d}$] Active power demand vector
+    \item[$c(\cdot)$] Production cost function
+    \item[$\overline{\boldsymbol{p}}$] Maximum generator output vector
+    \item[$\overline{\boldsymbol{r}}$] Maximum generator reserve vector
+    \item[$R$] Minimum reserve requirement
+    \item[$\boldsymbol{B}$] Bus susceptance matrix
+    \item[$x_{ij}$] Reactance of branch $(i,j)$
+    \item[$\overline{P}_{ij}$] Thermal limit of branch $(i,j)$
+    \item[$\boldsymbol{B}^{\dagger}$] Moore-Penrose pseudo-inverse of $\boldsymbol{B}$
+    \item[$\mathbf{e}$] Vector of ones
+    \item[$M_{pb}$] Power balance penalty multiplier
+    \item[$M_{res}$] Reserve penalty multiplier
+    \item[$M_{th}$] Thermal limit penalty multiplier
+    \item[$M_{dc}$] DC power flow penalty multiplier
+\end{itemize}
+
+\end{multicols}
 \section{Introduction}
-The paper proposes an End-to-End Learning and Repair (E2ELR) architecture for training optimization proxies for economic dispatch problems. That is, at the end of the network, there are repair layers that ensure power balance and reserve. As stated in the paper, if there is a feasible solution, the repair layers will output a feasible solution, and if there is no feasible solution, the repair layers will minimize in some sense the violation of the constraints. In this work, we merge the ED problem with the DC-OPF problem, and we propose to add a layer that will ensure the satisfaction of the DC power flow equations.
+The paper~\cite{Chen2023_E2ELR} proposes an End-to-End Learning and Repair (E2ELR) architecture for training optimization proxies for economic dispatch problems. That is, at the end of the network, there are repair layers that ensure power balance and reserve. As stated in the paper~\cite{Chen2023_E2ELR}, if there is a feasible solution, the repair layers will output a feasible solution, and if there is no feasible solution, the repair layers will minimize in some sense the violation of the constraints. In this work, we merge the ED problem with the DC-OPF problem~\cite{Stott2009_DCPF}, and we propose to add a layer that will ensure the satisfaction of the DC power flow equations.
+
 
 \section{Problem Statement}
 
@@ -39,7 +76,7 @@ subject to
     \item $0 \leq \boldsymbol{p} \leq \overline{\boldsymbol{p}}$ (generator output limits)
     \item $0 \leq \boldsymbol{r} \leq \overline{\boldsymbol{r}}$ (generator reserve limits)
     \item $\forall i, j$ $\frac{\theta_i - \theta_j}{x_{ij}} \leq \overline{P}_{ij}$ (line flow limits)
-    \item $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$ (DC power flow equations)
+    \item $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$ (DC power flow equations~\cite{Stott2009_DCPF})
 \end{enumerate}
 and for models which don't guarantee the feasibility of solution, we add penalty terms to the cost function.
 \[penalty_{pb}(\hat{\boldsymbol{p}}) = M_{pb} \cdot |e^T\hat{\boldsymbol{p}} - e^T\boldsymbol{d}|\]
@@ -48,7 +85,7 @@ and for models which don't guarantee the feasibility of solution, we add penalty
 \[penalty_{dc}(\hat{\boldsymbol{p}}, \theta) = M_{dc} \cdot \|\boldsymbol{B}\theta - (\hat{\boldsymbol{p}} - \boldsymbol{d})\|_1\]
 \[penalty(\hat{\boldsymbol{p}}, \theta) = penalty_{pb}(\hat{\boldsymbol{p}}) + penalty_{res}(\hat{\boldsymbol{r}}) + penalty_{th}(\hat{\boldsymbol{p}}, \theta) + penalty_{dc}(\hat{\boldsymbol{p}}, \theta)\]
 
-As seen in the paper, conditions 2, 3, and 5 are equivalent to the condition $R \leq e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})$, and removing $\boldsymbol{r}$ from the optimization variables.
+As seen in the paper~\cite{Chen2023_E2ELR}, conditions 2, 3, and 5 are equivalent to the condition $R \leq e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})$, and removing $\boldsymbol{r}$ from the optimization variables.
 
 Thus the problem can be rewritten as:
 \begin{align}
@@ -84,7 +121,7 @@ where $\boldsymbol{B}^{\dagger}$ is the Moore-Penrose pseudo-inverse of $\boldsy
 
 \section{Experiments}
 \subsection{Experimental Setup}
-The experimental setup is the same as in the paper, except $\lambda = 1.0$, and for the hyperparameter tuning. The hyperparameter tuning is done using Optuna's hyperparameter optimization with 25 trials, and ASHAScheduler for early stopping. Additionally, due to the constraints added to the problem, we add the parameter $M_{dc} = 3500 \frac{\$}{MW}$ for the penalty term of the DC power flow equations, which is the same as the power balance parameter $M_{pb}$. The datasets which were tested for are ieee300, and pegase 1354.
+The experimental setup is the same as in the paper, except $\lambda = 1.0$, and for the hyperparameter tuning. The hyperparameter tuning is done using Optuna's~\cite{Akiba2019_Optuna} hyperparameter optimization with 25 trials, and ASHAScheduler~\cite{Li2020_ASHA} for early stopping. Additionally, due to the constraints added to the problem, we add the parameter $M_{dc} = 3500 \frac{\$}{MW}$ for the penalty term of the DC power flow equations, which is the same as the power balance parameter $M_{pb}$. The datasets which were tested for are ieee300, and pegase 1354.
 
 \subsection{Results}
 The hyperparameter tuning results are shown in Tables~\ref{tab:hparam_ieee300} and~\ref{tab:hparam_pegase1354}.
@@ -160,6 +197,9 @@ These results show that adding the theta repair layer significantly reduces the 
 \section{Conclusion}
 Although the idea proposed in the previous paper for using closed form repair layers is not easily extendable to new constraints. by understanding the structure of the constraints or adding constraints with new variables, it is possible to design additional and efficient repair layers, yet this will not always yield great results out of the box.
 
+
+\bibliographystyle{plain}
+\bibliography{refs}
 
 \end{document}
 
