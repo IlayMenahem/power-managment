@@ -12,6 +12,7 @@
 \usepackage{multicol}
 
 \usepackage{enumitem}
+\usepackage[margin=1in]{geometry}
 
 \begin{document}
 
@@ -166,30 +167,51 @@ Training the networks using the hyperparameters shown above, we get the followin
 \centering
 \caption{Test set results -- ieee300 dataset.}
 \label{tab:results_ieee300}
-\begin{tabular}{lcccc}
+{\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccc}
 \toprule
-\textbf{Model} & \textbf{Gap (\%)} & \textbf{SGM Gap (\%)} & \textbf{PB Viol. (pu)} & \textbf{DC Viol. (pu)} \\
+\textbf{Model} & \textbf{Gap} & \textbf{SGM Gap} & \textbf{PB feas.} & \textbf{PB viol.}$^{*}$ & \textbf{Res. feas.} & \textbf{Inference}$^{\dagger}$ \\
+ & (\%) & (\%) & (\%) & (pu) & (\%) & (ms) \\
 \midrule
-DNN     & 603.86 & 595.75 & $5.50 \times 10^{-1}$ & 7.527 \\
-E2ELR   & 736.70 & 730.52 & $6.06 \times 10^{-6}$ & 10.043 \\
-E2ELRDC & \textbf{21.49}  & \textbf{19.94}  & $7.14 \times 10^{-6}$ & \textbf{0.182} \\
+DNN     & 81.05 & 63.06 & 0.02 & 0.69 & 98.08 & \textbf{0.71} \\
+E2ELR   & \textbf{1.09} & \textbf{1.05} & \textbf{100.00} & -- & \textbf{100.00} & 1.16 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}\\[2pt]
+{\footnotesize $^{*}$Shifted geometric mean (shift 1 pu) of the violations of infeasible predictions. $^{\dagger}$Per batch of 256 instances.}
 \end{table}
 
 \begin{table}[h]
 \centering
 \caption{Test set results -- pegase1354 dataset.}
 \label{tab:results_pegase1354}
-\begin{tabular}{lcccc}
+{\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccc}
 \toprule
-\textbf{Model} & \textbf{Gap (\%)} & \textbf{SGM Gap (\%)} & \textbf{PB Viol. (pu)} & \textbf{DC Viol. (pu)} \\
+\textbf{Model} & \textbf{Gap} & \textbf{SGM Gap} & \textbf{PB feas.} & \textbf{PB viol.}$^{*}$ & \textbf{Res. feas.} & \textbf{Inference}$^{\dagger}$ \\
+ & (\%) & (\%) & (\%) & (pu) & (\%) & (ms) \\
 \midrule
-DNN     & 2748.71 & 2692.70 & $2.07 \times 10^{1}$  & 62.747 \\
-E2ELR   & 2563.26 & 2551.00 & $2.08 \times 10^{-5}$ & 77.578 \\
-E2ELRDC & \textbf{362.46}  & \textbf{348.80}  & $1.98 \times 10^{-5}$ & \textbf{9.848} \\
+DNN     & 91.69 & 75.07 & 0.00 & 1.49 & 100.00 & \textbf{0.75} \\
+E2ELR   & \textbf{0.82} & \textbf{0.78} & \textbf{100.00} & -- & 100.00 & 1.34 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}\\[2pt]
+{\footnotesize $^{*}$Shifted geometric mean (shift 1 pu) of the violations of infeasible predictions. $^{\dagger}$Per batch of 256 instances.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Feasibility restoration time per instance (ED-R): repair layers (RL) vs Euclidean projection (EP).}
+\label{tab:repair_vs_projection}
+{\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{System} & \textbf{RL, single} & \textbf{RL, batch}$^{*}$ & \textbf{EP}$^{\dagger}$ & \multicolumn{2}{c}{\textbf{Speedup}} \\
+ & ($\mu$s) & ($\mu$s) & (ms) & single & batch \\
+\midrule
+ieee300    & 105.6 & 1.22 & 1.78  & 17$\times$  & 1457$\times$ \\
+pegase1354 & 88.4  & 1.88 & 25.96 & 294$\times$ & 13800$\times$ \\
+\bottomrule
+\end{tabular}}\\[2pt]
+{\footnotesize Medians over the initial predictions of the trained E2ELR backbone on 100 test instances. $^{*}$100 instances repaired at once, time divided by 100. $^{\dagger}$QP solved with HiGHS on one thread.}
 \end{table}
 
 These results show that adding the theta repair layer significantly reduces the DC power flow violation, and also significantly reduces the optimality gap. although the addition of the theta repair layer does help it is clear that the results still leave a lot to desire, and there is still a significant gap between the E2ELRDC model and the optimal solution. 

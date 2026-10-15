@@ -1,0 +1,30 @@
+{
+  "case": "data/pglib_opf_case300_ieee.m",
+  "model": "dnn",
+  "problem": "edr",
+  "line_limits": "soft",
+  "mode": "ssl",
+  "config": {
+    "n_layers": 3,
+    "hidden_dim": 256,
+    "lr": 0.01,
+    "batch_size": 64,
+    "lam": 1.0
+  },
+  "training_time_min": 2.226228698094686,
+  "best_val_loss": 9154.684958629352,
+  "results": {
+    "test_loss": 9140.292829021411,
+    "mean_gap_pct": 81.05097044653003,
+    "sgm_gap_pct": 63.05949834777008,
+    "feasibility_rate_pct": 0.02,
+    "pb_feasible_pct": 0.019999999999997797,
+    "pb_violation_sgm_pu": 0.6928937246720923,
+    "reserve_feasible_pct": 98.08,
+    "reserve_violation_sgm_pu": 2.7512136195504064,
+    "line_feasibility_rate_pct": 56.32,
+    "mean_thermal_violation_pu": 0.08327439440836931,
+    "mean_max_dc_residual_pu": 0.8021568756923312,
+    "inference_ms_per_256": 0.7129579898901284
+  }
+}

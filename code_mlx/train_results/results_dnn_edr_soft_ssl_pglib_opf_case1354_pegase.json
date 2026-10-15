@@ -1,0 +1,30 @@
+{
+  "case": "data/pglib_opf_case1354_pegase.m",
+  "model": "dnn",
+  "problem": "edr",
+  "line_limits": "soft",
+  "mode": "ssl",
+  "config": {
+    "n_layers": 3,
+    "hidden_dim": 256,
+    "lr": 0.01,
+    "batch_size": 64,
+    "lam": 1.0
+  },
+  "training_time_min": 89.78282781839371,
+  "best_val_loss": 23262.80285714385,
+  "results": {
+    "test_loss": 23034.318861751883,
+    "mean_gap_pct": 91.68512298684945,
+    "sgm_gap_pct": 75.06681750303443,
+    "feasibility_rate_pct": 0.0,
+    "pb_feasible_pct": 0.0,
+    "pb_violation_sgm_pu": 1.4884819973769474,
+    "reserve_feasible_pct": 100.0,
+    "reserve_violation_sgm_pu": NaN,
+    "line_feasibility_rate_pct": 60.14000000000001,
+    "mean_thermal_violation_pu": 0.4063268802118538,
+    "mean_max_dc_residual_pu": 1.8573079308312146,
+    "inference_ms_per_256": 0.7496250327676535
+  }
+}

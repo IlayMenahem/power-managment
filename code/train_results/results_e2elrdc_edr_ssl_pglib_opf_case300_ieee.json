@@ -9,15 +9,15 @@
     "lr": 0.00010264181656177163,
     "batch_size": 128
   },
-  "training_time_min": 0.6645791014035543,
-  "best_val_loss": 6175.9580078125,
+  "training_time_min": 2.792924137910207,
+  "best_val_loss": 5308.685147979601,
   "results": {
-    "test_loss": 6158.65625,
-    "mean_gap_pct": 21.492921829223633,
-    "sgm_gap_pct": 19.936431884765625,
-    "feasibility_rate_pct": 0.0,
-    "mean_pb_violation_pu": 7.135009582270868e-06,
-    "mean_reserve_shortage_pu": 0.0,
-    "mean_dc_violation_pu": 0.18198320269584656
+    "test_loss": 5291.6762219828315,
+    "mean_gap_pct": 1.1975068199978929,
+    "sgm_gap_pct": 1.1602842059718876,
+    "feasibility_rate_pct": 100.0,
+    "mean_pb_violation_pu": 1.0775914347505023e-10,
+    "mean_reserve_shortage_pu": 3.0518663152179215e-13,
+    "mean_dc_violation_pu": 1.1686106051903328e-10
   }
 }
