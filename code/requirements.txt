@@ -1,5 +1,4 @@
+mlx
 numpy
 scipy
-torch
-ray[tune]
-optuna
+highspy

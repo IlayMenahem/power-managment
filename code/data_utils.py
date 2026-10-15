@@ -6,14 +6,20 @@ All power quantities are in per-unit (divided by baseMVA). ED is treated as
 ED-R with zero reserve requirement and zero reserve capacity, so a single
 formulation serves both problems.
 
+Thermal limits are soft (penalized, as in the paper) or hard. Hard-limit
+datasets are built by rejection sampling: instances whose hard-limit LP is
+infeasible are dropped, so every kept instance has a feasible solution.
+
 Reference: "End-to-End Feasible Optimization Proxies for Large-Scale
 Economic Dispatch" (arXiv 2304.11726v2)
 
 Usage (generate and save the ground truth used by main.py):
     python data_utils.py --case data/pglib_opf_case300_ieee.m --problem edr
+    python data_utils.py --case data/pglib_opf_case300_ieee.m --problem edr --line_limits hard
 """
 
 import argparse
+import math
 import os
 import re
 import time
@@ -29,7 +35,8 @@ from scipy.optimize import linprog
 M_TH = 1500.0  # thermal violation: 1500 $/MW
 M_PB = 3500.0  # power balance: 3500 $/MW
 M_RES = 1100.0  # reserve shortage: 1100 $/MW
-M_DC = 3500.0  # DC power flow residual: 3500 $/MW
+
+LINE_LIMITS = ("soft", "hard")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +53,7 @@ class Case:
     slack: int  # index of the reference bus
     pd_ref: np.ndarray  # (n_bus,) reference active demand
     gen_bus: np.ndarray  # (n_gen,) bus index of each generator
+    pg_min: np.ndarray  # (n_gen,) minimum generation (may be negative)
     pg_max: np.ndarray  # (n_gen,) maximum generation
     cost: np.ndarray  # (n_gen,) linear cost coefficient
     branch_from: np.ndarray  # (n_branch,) from-bus index
@@ -103,6 +111,8 @@ def load_case(path: str) -> Case:
 
     branch = branch[branch[:, 10] == 1]  # status = 1
     tap = np.where(branch[:, 8] == 0, 1.0, branch[:, 8])  # tap ratio 0 means 1
+    # Phase shift angles (column 9) are ignored: the paper's flows are Phi (pg - pd)
+    # (Eq. 1g), with no phase shifter term.
 
     ref_buses = np.flatnonzero(bus[:, 1] == 3)
     return Case(
@@ -111,6 +121,7 @@ def load_case(path: str) -> Case:
         slack=int(ref_buses[0]) if len(ref_buses) else 0,
         pd_ref=bus[:, 2] / base_mva,
         gen_bus=to_bus_index(gen[:, 0]),
+        pg_min=gen[:, 9] / base_mva,
         pg_max=gen[:, 8] / base_mva,
         cost=cost,
         branch_from=to_bus_index(branch[:, 0]),
@@ -144,6 +155,9 @@ class Instances:
     pd: np.ndarray  # (n_instances, n_bus) demand
     R: np.ndarray  # (n_instances,) reserve requirement, 0 for ED
     r_max: np.ndarray  # (n_gen,) reserve capacity per generator, 0 for ED
+
+    def subset(self, idx: np.ndarray) -> "Instances":
+        return Instances(self.pd[idx], self.R[idx], self.r_max)
 
 
 def compute_reserve_params(case: Case) -> tuple[float, np.ndarray]:
@@ -184,9 +198,10 @@ class DispatchLP:
         min   cost @ pg + M_TH * sum(xi)
         s.t.  sum(pg) = D                         power balance
               B_r @ theta_r - C_g @ pg = -pd_r    DC power flow at non-slack buses
-              |F @ theta_r| - xi <= rate          soft thermal limits
+              |F @ theta_r| - xi <= rate          thermal limits
               pg + r <= pg_max,  sum(r) >= R      reserves
-              0 <= pg <= pg_max, xi >= 0, 0 <= r <= r_max
+              pg_min <= pg <= pg_max, 0 <= r <= r_max
+              0 <= xi (soft limits) or xi = 0 (hard limits)
     """
 
     c: np.ndarray
@@ -198,7 +213,7 @@ class DispatchLP:
     n_gen: int
 
 
-def build_lp(case: Case, r_max: np.ndarray) -> DispatchLP:
+def build_lp(case: Case, r_max: np.ndarray, hard_limits: bool = False) -> DispatchLP:
     n_gen, n_branch, n_bus = case.n_gen, case.n_branch, case.n_bus
     non_slack = np.flatnonzero(np.arange(n_bus) != case.slack)
 
@@ -224,7 +239,8 @@ def build_lp(case: Case, r_max: np.ndarray) -> DispatchLP:
     )
 
     zeros_g, zeros_e, zeros_t = np.zeros(n_gen), np.zeros(n_branch), np.zeros(n_bus - 1)
-    inf_e, inf_t = np.full(n_branch, np.inf), np.full(n_bus - 1, np.inf)
+    xi_max = zeros_e if hard_limits else np.full(n_branch, np.inf)
+    inf_t = np.full(n_bus - 1, np.inf)
     return DispatchLP(
         c=np.concatenate([case.cost, np.full(n_branch, M_TH), zeros_t, zeros_g]),
         A_eq=constraints[:n_bus],
@@ -232,8 +248,8 @@ def build_lp(case: Case, r_max: np.ndarray) -> DispatchLP:
         b_ub_fixed=np.concatenate([case.rate, case.rate, case.pg_max]),
         bounds=np.column_stack(
             [
-                np.concatenate([zeros_g, zeros_e, -inf_t, zeros_g]),
-                np.concatenate([case.pg_max, inf_e, inf_t, r_max]),
+                np.concatenate([case.pg_min, zeros_e, -inf_t, zeros_g]),
+                np.concatenate([case.pg_max, xi_max, inf_t, r_max]),
             ]
         ),
         non_slack=non_slack,
@@ -244,7 +260,7 @@ def build_lp(case: Case, r_max: np.ndarray) -> DispatchLP:
 def solve_instance(
     lp: DispatchLP, pd: np.ndarray, R: float
 ) -> tuple[np.ndarray, float]:
-    """Return the optimal (pg, objective), or NaNs if HiGHS fails."""
+    """Return the optimal (pg, objective), or NaNs if HiGHS fails or it is infeasible."""
     result = linprog(
         lp.c,
         A_ub=lp.A_ub,
@@ -260,10 +276,10 @@ def solve_instance(
 
 
 def solve_all_instances(
-    case: Case, instances: Instances, n_workers: int = 4
+    case: Case, instances: Instances, hard_limits: bool = False, n_workers: int = 4
 ) -> tuple[np.ndarray, np.ndarray]:
     """Solve all instances in parallel; returns pg_star (n, n_gen), obj_star (n,)."""
-    solve = partial(solve_instance, build_lp(case, instances.r_max))
+    solve = partial(solve_instance, build_lp(case, instances.r_max, hard_limits))
     print(
         f"  Solving {len(instances.pd)} instances with HiGHS ({n_workers} workers)..."
     )
@@ -278,41 +294,99 @@ def solve_all_instances(
 
 
 # ---------------------------------------------------------------------------
-# 4. Ground-truth checkpoints
+# 4. Datasets with ground truth
 # ---------------------------------------------------------------------------
 
 
 def ground_truth_path(
-    checkpoint_dir: str, case: Case, problem: str, n_instances: int, seed: int
+    checkpoint_dir: str,
+    case: Case,
+    problem: str,
+    line_limits: str,
+    n_instances: int,
+    seed: int,
 ) -> str:
-    filename = f"gt_{case.name}_{problem}_n{n_instances}_s{seed}.npz"
+    filename = f"gt_{case.name}_{problem}_{line_limits}_n{n_instances}_s{seed}.npz"
     return os.path.join(checkpoint_dir, filename)
 
 
-def solve_and_save(
-    case: Case, instances: Instances, path: str, n_workers: int = 4
-) -> tuple[np.ndarray, np.ndarray]:
-    t0 = time.time()
-    pg_star, obj_star = solve_all_instances(case, instances, n_workers)
-    print(f"  Solving done in {(time.time() - t0) / 60:.1f} min")
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    np.savez(path, pg_star=pg_star, obj_star=obj_star)
-    print(f"  Ground truth saved to: {path}")
-    return pg_star, obj_star
+def _sample_feasible(
+    case: Case,
+    problem: str,
+    n_instances: int,
+    seed: int,
+    oversample: float,
+    n_workers: int,
+) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Rejection sampling for hard thermal limits: solve a pool of
+    ceil(n * oversample) instances and keep the first n feasible ones, in order.
+    Returns (pool_size, kept indices, pg_star, obj_star).
+    """
+    pool_size = math.ceil(n_instances * oversample)
+    pool = generate_instances(case, pool_size, problem, seed)
+    pg_star, obj_star = solve_all_instances(case, pool, True, n_workers)
+    feasible = np.flatnonzero(~np.isnan(obj_star))
+    print(f"  Acceptance rate: {len(feasible) / pool_size:.1%}")
+    if len(feasible) < n_instances:
+        raise RuntimeError(
+            f"Only {len(feasible)} of {pool_size} instances are feasible with hard "
+            f"thermal limits; increase --oversample."
+        )
+    kept = feasible[:n_instances]
+    return pool_size, kept, pg_star[kept], obj_star[kept]
 
 
-def load_or_solve_ground_truth(
-    case: Case, instances: Instances, path: str, solve_if_missing: bool
-) -> tuple[np.ndarray, np.ndarray] | None:
-    """Load the ground-truth checkpoint; solve it only if missing and requested."""
+def load_dataset(
+    case: Case,
+    problem: str,
+    n_instances: int,
+    seed: int,
+    line_limits: str,
+    checkpoint_dir: str,
+    solve_if_missing: bool,
+    n_workers: int = 4,
+    oversample: float = 1.35,
+) -> tuple[Instances, tuple[np.ndarray, np.ndarray] | None]:
+    """
+    Instances and their ground truth (pg_star, obj_star). The checkpoint stores
+    the solutions and the indices of the kept instances in a pool generated from
+    the seed, so the instances are regenerated rather than stored.
+
+    Soft limits: the instances are the first n of the pool; they are solved only
+    if the checkpoint is missing and solve_if_missing is set (otherwise the
+    ground truth is None). Hard limits: feasibility is only known after
+    solving, so a missing checkpoint is always generated by rejection sampling.
+    """
+    path = ground_truth_path(
+        checkpoint_dir, case, problem, line_limits, n_instances, seed
+    )
     if os.path.isfile(path):
         print(f"Loading ground truth from: {path}")
         data = np.load(path)
-        return data["pg_star"], data["obj_star"]
-    if solve_if_missing:
-        return solve_and_save(case, instances, path)
-    print("No ground truth checkpoint found; optimality gaps will be unavailable.")
-    return None
+        pool = generate_instances(case, int(data["pool_size"]), problem, seed)
+        return pool.subset(data["kept"]), (data["pg_star"], data["obj_star"])
+
+    if line_limits == "hard":
+        t0 = time.time()
+        pool_size, kept, pg_star, obj_star = _sample_feasible(
+            case, problem, n_instances, seed, oversample, n_workers
+        )
+        instances = generate_instances(case, pool_size, problem, seed).subset(kept)
+    else:
+        instances = generate_instances(case, n_instances, problem, seed)
+        if not solve_if_missing:
+            print("No ground truth checkpoint found; optimality gaps will be unavailable.")
+            return instances, None
+        t0 = time.time()
+        pool_size, kept = n_instances, np.arange(n_instances)
+        pg_star, obj_star = solve_all_instances(case, instances, False, n_workers)
+
+    print(f"  Solving done in {(time.time() - t0) / 60:.1f} min")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez(path, pg_star=pg_star, obj_star=obj_star, pool_size=pool_size, kept=kept)
+    print(f"  Ground truth saved to: {path}")
+    return instances, (pg_star, obj_star)
 
 
 # ---------------------------------------------------------------------------
@@ -325,19 +399,32 @@ if __name__ == "__main__":
     )
     parser.add_argument("--case", type=str, default="data/pglib_opf_case300_ieee.m")
     parser.add_argument("--problem", type=str, default="ed", choices=["ed", "edr"])
+    parser.add_argument("--line_limits", type=str, default="soft", choices=LINE_LIMITS)
     parser.add_argument("--n_instances", type=int, default=50000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--oversample",
+        type=float,
+        default=1.35,
+        help="Pool size / n_instances for rejection sampling (hard limits only)",
+    )
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument("--n_workers", type=int, default=4)
     args = parser.parse_args()
 
     case = load_case(args.case)
     print(f"Case {case.summary()}")
-    instances = generate_instances(case, args.n_instances, args.problem, args.seed)
-    path = ground_truth_path(
-        args.checkpoint_dir, case, args.problem, args.n_instances, args.seed
+    _, (_, obj_star) = load_dataset(
+        case,
+        args.problem,
+        args.n_instances,
+        args.seed,
+        args.line_limits,
+        args.checkpoint_dir,
+        solve_if_missing=True,
+        n_workers=args.n_workers,
+        oversample=args.oversample,
     )
-    _, obj_star = solve_and_save(case, instances, path, args.n_workers)
     valid = obj_star[~np.isnan(obj_star)]
     if len(valid):
         print(f"  Objective range: [{valid.min():.2f}, {valid.max():.2f}]")

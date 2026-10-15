@@ -1,116 +1,57 @@
-# E2ELR: End-to-End Feasible Optimization Proxies for Large-Scale Economic Dispatch
+# E2ELR — MLX version
 
-Implementation of models and experiments and my extension of [arXiv:2304.11726v2](https://arxiv.org/abs/2304.11726v2).
-
-## Overview
-
-Trains neural network proxies that approximate solutions to the Economic Dispatch (ED) and Economic Dispatch with Reserves (EDR) problems, while guaranteeing feasibility via differentiable repair layers.
-
-**Models:**
-
-| Model | Description |
-|-------|-------------|
-| `dnn` | Vanilla fully-connected network (baseline, no feasibility layers) |
-| `e2elr` | End-to-End Learning and Repair — DNN + power balance repair + reserve repair |
-| `e2elrdc` | E2ELR + DC power flow repair (enforces power flow equations) |
-
-**Problem types:**
-
-| Problem | Description |
-|---------|-------------|
-| `ed` | Economic Dispatch (no reserves) |
-| `edr` | Economic Dispatch with Reserves |
-
-**Training modes:**
-
-| Mode | Description |
-|------|-------------|
-| `sl` | Supervised learning (minimize MAE to solver solution + constraint penalties) |
-| `ssl` | Self-supervised learning (minimize cost + constraint penalties directly) |
-
-## Installation
+MLX port of `../code/` (PyTorch), changed to follow the paper more closely (see below).
+Models `dnn` and `e2elr`, problems `ed` and `edr`, training modes `sl` and `ssl`, and
+thermal limits `soft` (paper) or `hard`.
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt   # needs Python >= 3.10
+python main.py --case data/pglib_opf_case300_ieee.m --model e2elr --problem edr --mode ssl
+python data_utils.py --case data/pglib_opf_case300_ieee.m --problem edr --line_limits hard
+python train_all.py               # the paper's training settings, no search
 ```
 
-Physical quantities (repairs, DC projection, violations) are computed in float64;
-the network backbone runs in float32. Use `--device cpu` or `cuda` (`auto` picks
-CUDA if available); MPS is not supported because it lacks float64.
+`data/` and `checkpoints/` are symlinks to `../code/`.
 
-## Usage
+## Hard thermal limits
+About 20% of the paper's ED-R instances have no solution when thermal limits are hard
+(they are the high-load ones). `--line_limits hard` builds a dataset by rejection
+sampling: a pool of `ceil(1.35 n)` instances is generated as in the paper, each is solved
+with hard limits, and the first `n` feasible ones are kept. Checkpoints store the kept
+indices, not the loads, so `gt_{case}_{problem}_{soft|hard}_n{n}_s{seed}.npz` is small.
 
-### Generate ground truth
+## Precision
+The backbone (Linear/BatchNorm/ReLU/Dropout) runs in float32 on the GPU. Repair layers,
+DC power flow, violations and losses are float64, which MLX only supports on the CPU
+stream, so `models.py` sets the default device to CPU and runs the backbone under
+`mx.stream(mx.gpu)`. Memory is unified, so there are no copies between the two.
 
-```bash
-python data_utils.py --case data/pglib_opf_case300_ieee.m --problem edr
-```
+## Differences from the PyTorch version
+Modelling (closer to the paper):
+- The network predicts only `pg`. The angles solve the DC power flow equations for `pg`
+  (`theta_ref = 0`, sparse LU of `B_r`), so branch flows equal the paper's PTDF flows.
+  There is no theta head, no `e2elrdc` projection and no DC penalty.
+- Phase shift angles are ignored, as in the paper's flows `Phi (pg - pd)` (Eq. 1g).
+- Generator minimums `Pmin` are kept; the repair layers act on `pg - pg_min` (the paper's
+  "without loss of generality, Pmin = 0" shift).
+- The network input is `(pd, R)`, the part of the paper's `x` that varies between
+  instances.
+- The thermal penalty is part of the SSL objective and is not scaled by `lambda`;
+  `lambda = 0` for `e2elr` with SSL, as for the paper's feasible models.
+- The DC residual check is per bus (max), not an L1 sum.
 
-Solves every instance with HiGHS and saves `checkpoints/gt_<case>_<problem>_n<N>_s<seed>.npz`,
-which `main.py` loads to compute optimality gaps (and needs for `--mode sl`).
+Training and reporting (the paper's):
+- Adam, lr 1e-2, weight decay 1e-6, batch size 64, no gradient clipping, 3 layers of 256
+  units (one point of the paper's grid; there is no hyperparameter search).
+- Per hard constraint, % feasible and the shifted geometric mean (1 p.u.) of the
+  violations of infeasible predictions (Table III).
+- `benchmarks.py`: inference time per batch of 256 (Tables VI-VII), and the repair
+  layers vs a Euclidean projection QP solved with HiGHS on one thread (Table X; the
+  paper uses Gurobi).
 
-### Train a single model
-
-```bash
-python main.py \
-    --case data/pglib_opf_case300_ieee.m \
-    --model e2elr \
-    --problem ed \
-    --mode ssl
-```
-
-**Key arguments:**
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--case` | `data/pglib_opf_case300_ieee.m` | Path to MATPOWER `.m` case file |
-| `--model` | `e2elr` | Model architecture: `dnn`, `e2elr`, `e2elrdc` |
-| `--problem` | `ed` | Problem type: `ed` or `edr` |
-| `--mode` | `ssl` | Training mode: `sl` or `ssl` |
-| `--n_instances` | `50000` | Number of instances to generate |
-| `--n_layers` | `3` | Number of hidden layers |
-| `--hidden_dim` | `256` | Hidden layer dimension |
-| `--lr` | `1e-2` | Initial learning rate |
-| `--batch_size` | `64` | Training batch size |
-| `--max_epochs` | `500` | Maximum epochs |
-| `--patience` | `20` | Early-stopping patience |
-| `--max_time` | `150.0` | Max training time (minutes) |
-| `--seed` | `42` | Random seed |
-| `--skip_solve` | off | Don't solve the LPs when no ground-truth checkpoint exists |
-| `--results_file` | none | Save test metrics as JSON |
-
-### Hyperparameter search
-
-```bash
-python hparam_search.py
-```
-
-Uses [Ray Tune](https://docs.ray.io/en/latest/tune/index.html) with Optuna. Results are saved under `ray_results/`.
-
-### Run all combinations
-
-```bash
-python run_all.py    # hyperparameter search for every combination
-python train_all.py  # train + evaluate each combination with its best config
-```
-
-Both cover `{dnn, e2elr, e2elrdc}` × `{edr}` × `{ieee300, pegase1354}`.
-`train_all.py` writes test metrics to `train_results/`.
-
-## File Structure
-
-```
-code/
-├── main.py          # Entry point: data loading, training, evaluation
-├── models.py        # DispatchProxy (dnn / e2elr / e2elrdc) + repair layers
-├── train.py         # Dataset construction, training loop, evaluation
-├── data_utils.py    # MATPOWER parsing, instance generation, LP ground truth
-├── hparam_search.py # Hyperparameter tuning with Ray Tune + Optuna
-├── run_all.py       # Hyperparameter search for all combinations
-├── train_all.py     # Training with the best configs for all combinations
-├── requirements.txt # Python dependencies
-├── data/            # MATPOWER .m case files
-├── checkpoints/     # Precomputed ground-truth solution caches (.npz)
-├── ray_results/     # Best hyperparameter configs
-└── train_results/   # Test metrics per combination
-```
+Implementation:
+- No `hparam_search.py` / `run_all.py` (Ray Tune).
+- `DataLoader` is replaced by `Dataset.batches`; ReduceLROnPlateau is `PlateauScheduler`;
+  Adam's L2 weight decay is added to the gradient, as in torch.
+- The SL loss uses a masked mean instead of boolean indexing.
+- Ground-truth files have new names, so the PyTorch ones in `checkpoints/` are untouched.

@@ -1,4 +1,0 @@
-mlx
-numpy
-scipy
-highspy

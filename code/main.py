@@ -5,6 +5,7 @@ for Large-Scale Economic Dispatch.
 Usage:
     python main.py --case data/pglib_opf_case300_ieee.m --model e2elr --problem ed --mode ssl
     python main.py --case data/pglib_opf_case300_ieee.m --model dnn --problem edr --mode sl
+    python main.py --case data/pglib_opf_case300_ieee.m --model e2elr --problem edr --line_limits hard
 
 Reference: arXiv 2304.11726v2
 """
@@ -13,22 +14,17 @@ import argparse
 import json
 import os
 
+import mlx.core as mx
 import numpy as np
-import torch
-from data_utils import (
-    compute_reserve_params,
-    generate_instances,
-    ground_truth_path,
-    load_case,
-    load_or_solve_ground_truth,
-)
+from data_utils import LINE_LIMITS, compute_reserve_params, load_case, load_dataset
+from mlx.utils import tree_flatten
 from models import ARCHITECTURES, DispatchProxy
+from benchmarks import inference_time_ms, repair_vs_projection
 from train import (
-    DEFAULT_LAM,
     GridTensors,
     build_datasets,
+    default_lam,
     evaluate_model,
-    resolve_device,
     train_model,
 )
 
@@ -50,6 +46,14 @@ def parse_args() -> argparse.Namespace:
         default="ed",
         choices=["ed", "edr"],
         help="Problem type: ed (no reserves) or edr (with reserves)",
+    )
+    parser.add_argument(
+        "--line_limits",
+        type=str,
+        default="soft",
+        choices=LINE_LIMITS,
+        help="soft: thermal limits penalized (paper); hard: dataset of instances "
+        "feasible with hard thermal limits (rejection sampling)",
     )
     parser.add_argument(
         "--n_instances",
@@ -86,7 +90,8 @@ def parse_args() -> argparse.Namespace:
         "--lam",
         type=float,
         default=None,
-        help="Constraint penalty weight (default: 1.0 for ssl, 1e-4 for sl)",
+        help="Constraint penalty weight (default: 1.0 for ssl, 1e-4 for sl, 0 for "
+        "e2elr with ssl)",
     )
     parser.add_argument("--lr", type=float, default=1e-2, help="Initial learning rate")
     parser.add_argument(
@@ -104,15 +109,10 @@ def parse_args() -> argparse.Namespace:
     # Other
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        help="Device: cpu, cuda, or auto (MPS lacks float64)",
-    )
-    parser.add_argument(
         "--skip_solve",
         action="store_true",
-        help="Do not solve the LPs if no ground-truth checkpoint exists (SSL only)",
+        help="Do not solve the LPs if no ground-truth checkpoint exists (SSL, soft "
+        "limits only)",
     )
     parser.add_argument(
         "--checkpoint_dir",
@@ -140,9 +140,24 @@ def print_results(
     else:
         print("  Optimality Gap:          N/A (no ground truth)")
     print(f"  Feasibility Rate:        {results['feasibility_rate_pct']:.2f}%")
-    print(f"  Mean PB Violation:       {results['mean_pb_violation_pu']:.6f} p.u.")
-    print(f"  Mean Reserve Shortage:   {results['mean_reserve_shortage_pu']:.6f} p.u.")
-    print(f"  Mean DC Violation:       {results['mean_dc_violation_pu']:.6f} p.u.")
+    print(
+        f"  Power Balance:           {results['pb_feasible_pct']:.2f}% feasible, "
+        f"violation {results['pb_violation_sgm_pu']:.4g} p.u. (SGM of infeasible)"
+    )
+    print(
+        f"  Reserves:                {results['reserve_feasible_pct']:.2f}% feasible, "
+        f"shortage {results['reserve_violation_sgm_pu']:.4g} p.u. (SGM of infeasible)"
+    )
+    print(f"  Line Feasibility Rate:   {results['line_feasibility_rate_pct']:.2f}%")
+    print(f"  Mean Thermal Violation:  {results['mean_thermal_violation_pu']:.6f} p.u.")
+    print(f"  Mean Max DC Residual:    {results['mean_max_dc_residual_pu']:.2e} p.u.")
+    print(f"  Inference Time:          {results['inference_ms_per_256']:.2f} ms / 256")
+    if "repair_us" in results:
+        print(
+            f"  Repair vs Projection:    {results['repair_us']:.1f} us vs "
+            f"{results['projection_us']:.1f} us per instance "
+            f"({results['projection_speedup']:.0f}x)"
+        )
     print(f"  Best Val Loss:           {history['best_val_loss']:.6f}")
     print(f"  Training Time:           {history['training_time_min']:.1f} min")
 
@@ -154,12 +169,14 @@ def save_results(
         "case": args.case,
         "model": args.model,
         "problem": args.problem,
+        "line_limits": args.line_limits,
         "mode": args.mode,
         "config": {
             "n_layers": args.n_layers,
             "hidden_dim": args.hidden_dim,
             "lr": args.lr,
             "batch_size": args.batch_size,
+            "lam": args.lam,
         },
         "training_time_min": history["training_time_min"],
         "best_val_loss": history["best_val_loss"],
@@ -173,11 +190,10 @@ def save_results(
 
 def main() -> None:
     args = parse_args()
-    device = resolve_device(args.device)
-    print(f"Using device: {device}")
-    torch.manual_seed(args.seed)
+    mx.random.seed(args.seed)
+    np.random.seed(args.seed)
 
-    # 1. Case and instances
+    # 1. Case
     print(f"\n{'=' * 60}\nLoading case: {args.case}\n{'=' * 60}")
     case = load_case(args.case)
     print(f"  {case.summary()}")
@@ -190,19 +206,23 @@ def main() -> None:
         f"({case.pg_max.sum() * case.base_mva:.0f} MW)"
     )
 
-    print(f"\nGenerating {args.n_instances} {args.problem.upper()} instances...")
-    instances = generate_instances(case, args.n_instances, args.problem, args.seed)
+    # 2. Instances and ground truth (needed for SL and for optimality gaps)
+    print(
+        f"\n{args.n_instances} {args.problem.upper()} instances, "
+        f"{args.line_limits} thermal limits"
+    )
+    instances, ground_truth = load_dataset(
+        case,
+        args.problem,
+        args.n_instances,
+        args.seed,
+        args.line_limits,
+        args.checkpoint_dir,
+        solve_if_missing=args.mode == "sl" or not args.skip_solve,
+    )
     if args.problem == "edr":
         print(f"  alpha_r = {compute_reserve_params(case)[0]:.4f}")
         print(f"  R range: [{instances.R.min():.4f}, {instances.R.max():.4f}] p.u.")
-
-    # 2. Ground truth (needed for SL and for optimality gaps)
-    path = ground_truth_path(
-        args.checkpoint_dir, case, args.problem, args.n_instances, args.seed
-    )
-    ground_truth = load_or_solve_ground_truth(
-        case, instances, path, solve_if_missing=args.mode == "sl" or not args.skip_solve
-    )
     if ground_truth is not None:
         obj_star = ground_truth[1]
         valid = obj_star[~np.isnan(obj_star)]
@@ -211,18 +231,20 @@ def main() -> None:
             print(f"  Objective range: [{valid.min():.2f}, {valid.max():.2f}]")
 
     # 3. Datasets and model
-    datasets = build_datasets(instances, ground_truth, device=device)
+    datasets = build_datasets(instances, ground_truth)
     for name, ds in datasets.items():
         print(f"  {name}: {len(ds)} instances")
 
     model = DispatchProxy(
         args.model, case, instances.r_max, args.hidden_dim, args.n_layers
-    ).to(device)
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    )
+    n_params = sum(p.size for _, p in tree_flatten(model.trainable_parameters()))
     print(f"\nModel: {args.model.upper()} ({n_params:,} parameters)")
 
-    grid = GridTensors.from_case(case, instances.r_max, device)
-    lam = args.lam if args.lam is not None else DEFAULT_LAM[args.mode]
+    grid = GridTensors.from_case(case, instances.r_max)
+    if args.lam is None:
+        args.lam = default_lam(args.mode, args.model)
+    lam = args.lam
 
     # 4. Train
     print(
@@ -245,6 +267,11 @@ def main() -> None:
     # 5. Evaluate
     print(f"\n{'=' * 60}\nEvaluating on test set\n{'=' * 60}")
     results = evaluate_model(model, datasets["test"], grid, mode=args.mode, lam=lam)
+    results["inference_ms_per_256"] = inference_time_ms(model, datasets["test"])
+    if args.model != "dnn":
+        results.update(
+            repair_vs_projection(model, datasets["test"], case, instances.r_max)
+        )
     title = f"{args.model.upper()}, {args.mode.upper()}, {args.problem.upper()}"
     print_results(results, history, ground_truth is not None, title)
 
