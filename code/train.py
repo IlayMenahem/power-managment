@@ -1,495 +1,276 @@
 """
-Training and evaluation utilities for DNN and E2ELR models.
+Training and evaluation of the dispatch proxies.
 
 Implements:
-  - Supervised Learning (SL) loss    (Eq. 10 in paper)
-  - Self-Supervised Learning (SSL) loss  (Eq. 12 in paper)
+  - Supervised Learning (SL) loss        (Eq. 10)
+  - Self-Supervised Learning (SSL) loss  (Eq. 12)
+    both extended with thermal and DC power flow penalties
   - Training loop with LR scheduling and early stopping
   - Evaluation metrics (optimality gap, feasibility rate, violations)
+
+All physical quantities are float64 tensors (see models.py for why).
 
 Reference: "End-to-End Feasible Optimization Proxies for Large-Scale
 Economic Dispatch" (arXiv 2304.11726v2), Sections IV-V.
 """
 
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import torch
+from data_utils import M_DC, M_PB, M_RES, M_TH, Case, Instances
+from models import bus_injection
 from torch.utils.data import DataLoader, TensorDataset
 
-# ---------------------------------------------------------------------------
-# Penalty / violation helpers
-# ---------------------------------------------------------------------------
-
-# MISO-based penalty prices (Section V-C).
-M_TH = 1500.0  # thermal violation: 1500 $/MW
-M_PB = 3500.0  # power balance: 3500 $/MW
-M_RES = 1100.0  # reserve shortage: 1100 $/MW
-M_DC = 3500.0  # DC power flow residual: 3500 $/MW
+# Default constraint penalty weight per training mode (paper, Appendix B).
+DEFAULT_LAM = {"ssl": 1.0, "sl": 1e-4}
+# Validation always uses unit penalty weight, so that for SSL the validation
+# loss equals the penalized objective used for the optimality gap.
+VAL_LAM = 1.0
 
 
-def compute_thermal_violations(
-    theta, b_branch_t, branch_from, branch_to, branch_rate_t
-):
-    """
-    Compute per-branch thermal violations from explicit voltage angles.
-
-    Branch flow: f_e = b_branch[e] * (theta[branch_from[e]] - theta[branch_to[e]])
-    Thermal violation: xi_e = max(0, |f_e| - rate_e)
-
-    Args:
-        theta        : (batch, n_bus)
-        b_branch_t   : (n_branch,) tensor  branch susceptances
-        branch_from  : (n_branch,) int array  from-bus indices
-        branch_to    : (n_branch,) int array  to-bus indices
-        branch_rate_t: (n_branch,) tensor  thermal limits
-
-    Returns:
-        xi : (batch, n_branch)  thermal violations
-    """
-    flow = b_branch_t.unsqueeze(0) * (
-        theta[:, branch_from] - theta[:, branch_to]
-    )  # (batch, n_branch)
-    xi = torch.clamp(flow.abs() - branch_rate_t.unsqueeze(0), min=0.0)
-    return xi
+def resolve_device(name: str) -> str:
+    """'auto' picks CUDA if available, else CPU. MPS is rejected: it lacks float64."""
+    if name == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if name.startswith("mps"):
+        raise ValueError("MPS does not support float64; use --device cpu or cuda.")
+    return name
 
 
-def compute_dc_violations(theta, pg, pd, B_bus_t, gen_bus_idx_t):
-    """
-    DC power flow residual per instance: ||B_bus @ theta - (pg_bus - pd)||_1.
+@dataclass(frozen=True)
+class GridTensors:
+    """Case constants on the training device (float64, indices as long)."""
 
-    For E2ELR (power balance enforced) this is exactly 0.
-    For DNN this penalises deviations from the DC power flow equations.
+    cost: torch.Tensor  # (n_gen,)
+    pg_max: torch.Tensor  # (n_gen,)
+    r_max: torch.Tensor  # (n_gen,)
+    gen_bus: torch.Tensor  # (n_gen,)
+    b_branch: torch.Tensor  # (n_branch,)
+    rate: torch.Tensor  # (n_branch,)
+    branch_from: torch.Tensor  # (n_branch,)
+    branch_to: torch.Tensor  # (n_branch,)
 
-    Args:
-        theta        : (batch, n_bus)
-        pg           : (batch, n_gen)
-        pd           : (batch, n_bus)
-        B_bus_t      : (n_bus, n_bus) tensor  bus susceptance matrix
-        gen_bus_idx_t: (n_gen,) long tensor
+    @staticmethod
+    def from_case(case: Case, r_max: np.ndarray, device: str) -> "GridTensors":
+        def t(x: np.ndarray) -> torch.Tensor:
+            return torch.tensor(x, device=device)
 
-    Returns:
-        residual : (batch, 1)
-    """
-    batch_size = pg.shape[0]
-    n_bus = pd.shape[1]
-    pg_bus = torch.zeros(batch_size, n_bus, device=pg.device, dtype=pg.dtype)
-    pg_bus.scatter_add_(1, gen_bus_idx_t.unsqueeze(0).expand(batch_size, -1), pg)
-    net = pg_bus - pd  # (batch, n_bus)
-    B_theta = theta @ B_bus_t.T  # (batch, n_bus)  B_bus is symmetric
-    residual = (B_theta - net).abs().sum(dim=-1, keepdim=True)  # (batch, 1)
-    return residual
-
-
-def compute_power_balance_violation(pg, D):
-    """Absolute power balance violation: |sum(pg) - D|."""
-    return (pg.sum(dim=-1, keepdim=True) - D).abs()
-
-
-def compute_reserve_shortage(pg, pg_max, r_max, R):
-    """Reserve shortage: max(0, R - sum min(r_max, pg_max - pg))."""
-    r_star = torch.min(r_max.unsqueeze(0), pg_max.unsqueeze(0) - pg)
-    total_reserve = r_star.sum(dim=-1, keepdim=True)
-    return torch.clamp(R - total_reserve, min=0.0)
-
-
-def compute_constraint_penalty(
-    pg,
-    theta,
-    pd,
-    D,
-    pg_max,
-    r_max,
-    R,
-    b_branch_t,
-    branch_from,
-    branch_to,
-    branch_rate_t,
-    B_bus_t,
-    gen_bus_idx_t,
-    problem_type="ed",
-):
-    """
-    Constraint penalty psi(pg_hat) from Eq. 8 in the paper, extended with thermal and DC penalties.
-    """
-    psi = M_PB * compute_power_balance_violation(pg, D)
-    if problem_type == "edr":
-        psi = psi + M_RES * compute_reserve_shortage(pg, pg_max, r_max, R)
-
-    xi = compute_thermal_violations(
-        theta, b_branch_t, branch_from, branch_to, branch_rate_t
-    )
-    psi = psi + M_TH * xi.sum(dim=-1, keepdim=True)
-
-    dc_viol = compute_dc_violations(theta, pg, pd, B_bus_t, gen_bus_idx_t)
-    psi = psi + M_DC * dc_viol
-
-    return psi  # (batch, 1)
-
-
-# ---------------------------------------------------------------------------
-# Loss Functions
-# ---------------------------------------------------------------------------
-
-
-def loss_sl(
-    pg_hat,
-    theta,
-    pg_star,
-    pd,
-    D,
-    cost_coef,
-    pg_max,
-    r_max,
-    R,
-    b_branch_t,
-    branch_from,
-    branch_to,
-    branch_rate_t,
-    B_bus_t,
-    gen_bus_idx_t,
-    lam,
-    mu,
-    problem_type,
-    is_feasible_model,
-):
-    """
-    Supervised Learning loss (Eq. 10, extended with DC penalty).
-
-    L_SL = MAE(pg_hat, pg_star) + lambda * psi(pg_hat)
-    """
-    n_gen = pg_hat.shape[1]
-
-    # MAE on dispatch — skip instances where pg_star contains NaN (infeasible LP)
-    valid_sl = ~torch.isnan(pg_star).any(dim=-1)  # (batch,)
-    if valid_sl.any():
-        mae = (pg_hat[valid_sl] - pg_star[valid_sl]).abs().sum(dim=-1).mean() / n_gen
-    else:
-        mae = torch.tensor(0.0, device=pg_hat.device, dtype=pg_hat.dtype)
-
-    psi = compute_constraint_penalty(
-        pg_hat,
-        theta,
-        pd,
-        D,
-        pg_max,
-        r_max,
-        R,
-        b_branch_t,
-        branch_from,
-        branch_to,
-        branch_rate_t,
-        B_bus_t,
-        gen_bus_idx_t,
-        problem_type,
-    )
-    constraint_pen = lam * psi.mean()
-
-    return mae + constraint_pen
-
-
-def loss_ssl(
-    pg_hat,
-    theta,
-    pd,
-    D,
-    cost_coef,
-    pg_max,
-    r_max,
-    R,
-    b_branch_t,
-    branch_from,
-    branch_to,
-    branch_rate_t,
-    B_bus_t,
-    gen_bus_idx_t,
-    lam,
-    problem_type,
-    is_feasible_model,
-):
-    """
-    Self-Supervised Learning loss (Eq. 12, extended with DC penalty).
-
-    L_SSL = c(pg_hat) + lambda * psi(pg_hat)
-    """
-    # Generation cost
-    gen_cost = (cost_coef.unsqueeze(0) * pg_hat).sum(dim=-1).mean()
-
-    psi = compute_constraint_penalty(
-        pg_hat,
-        theta,
-        pd,
-        D,
-        pg_max,
-        r_max,
-        R,
-        b_branch_t,
-        branch_from,
-        branch_to,
-        branch_rate_t,
-        B_bus_t,
-        gen_bus_idx_t,
-        problem_type,
-    )
-    constraint_pen = lam * psi.mean()
-
-    return gen_cost + constraint_pen
-
-
-# ---------------------------------------------------------------------------
-# Dataset Construction
-# ---------------------------------------------------------------------------
-
-
-def build_datasets(instances, pg_star, obj_star, case, problem_type, device="cpu"):
-    """
-    Build train/val/test TensorDatasets.
-
-    Split: first 80% train, next 10% val, last 10% test.
-    """
-    pd_all = torch.tensor(instances["pd"], dtype=torch.float32, device=device)
-    R_all = torch.tensor(
-        instances["R_req"], dtype=torch.float32, device=device
-    ).unsqueeze(1)
-
-    n = len(pd_all)
-    n_train = int(0.8 * n)
-    n_val = int(0.1 * n)
-
-    if pg_star is not None:
-        pg_all = torch.tensor(pg_star, dtype=torch.float32, device=device)
-        obj_all = torch.tensor(obj_star, dtype=torch.float32, device=device)
-    else:
-        pg_all = torch.zeros(n, case["n_gen"], dtype=torch.float32, device=device)
-        obj_all = torch.full((n,), float("nan"), dtype=torch.float32, device=device)
-
-    def _slice(t, s, e):
-        return t[s:e]
-
-    splits = {}
-    for name, (s, e) in [
-        ("train", (0, n_train)),
-        ("val", (n_train, n_train + n_val)),
-        ("test", (n_train + n_val, n)),
-    ]:
-        splits[name] = TensorDataset(
-            _slice(pd_all, s, e),
-            _slice(R_all, s, e),
-            _slice(pg_all, s, e),
-            _slice(obj_all, s, e),
+        return GridTensors(
+            cost=t(case.cost),
+            pg_max=t(case.pg_max),
+            r_max=t(r_max),
+            gen_bus=t(case.gen_bus),
+            b_branch=t(case.b_branch),
+            rate=t(case.rate),
+            branch_from=t(case.branch_from),
+            branch_to=t(case.branch_to),
         )
 
-    return splits
+
+# ---------------------------------------------------------------------------
+# Constraint violations and losses
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Violations:
+    """Per-instance constraint violations, each of shape (batch,)."""
+
+    power_balance: torch.Tensor  # |sum(pg) - D|
+    reserve: torch.Tensor  # max(0, R - sum(min(r_max, pg_max - pg)))
+    thermal: torch.Tensor  # sum over branches of max(0, |f| - rate)
+    dc: torch.Tensor  # ||B theta - (pg_bus - pd)||_1
+
+    def penalty(self) -> torch.Tensor:
+        """Constraint penalty psi (Eq. 8), extended with thermal and DC terms."""
+        return (
+            M_PB * self.power_balance
+            + M_RES * self.reserve
+            + M_TH * self.thermal
+            + M_DC * self.dc
+        )
+
+
+def compute_violations(
+    pg: torch.Tensor,
+    theta: torch.Tensor,
+    pd: torch.Tensor,
+    R: torch.Tensor,
+    grid: GridTensors,
+) -> Violations:
+    flow = grid.b_branch * (theta[:, grid.branch_from] - theta[:, grid.branch_to])
+    # B @ theta = A^T flow: each branch flow leaves its from-bus and enters its to-bus
+    flow_out = (
+        torch.zeros_like(theta)
+        .index_add(1, grid.branch_from, flow)
+        .index_add(1, grid.branch_to, -flow)
+    )
+    r_star = torch.min(grid.r_max, grid.pg_max - pg)
+    return Violations(
+        power_balance=(pg.sum(dim=-1) - pd.sum(dim=-1)).abs(),
+        reserve=(R.squeeze(-1) - r_star.sum(dim=-1)).clamp(min=0.0),
+        thermal=(flow.abs() - grid.rate).clamp(min=0.0).sum(dim=-1),
+        dc=(flow_out - bus_injection(pg, pd, grid.gen_bus)).abs().sum(dim=-1),
+    )
+
+
+def proxy_loss(
+    pg: torch.Tensor,
+    theta: torch.Tensor,
+    pd: torch.Tensor,
+    R: torch.Tensor,
+    pg_star: torch.Tensor,
+    grid: GridTensors,
+    mode: str,
+    lam: float,
+) -> torch.Tensor:
+    """
+    SSL: L = cost(pg) + lam * psi             (Eq. 12)
+    SL : L = MAE(pg, pg_star) + lam * psi     (Eq. 10); instances without a
+         ground-truth solution (NaN pg_star) are left out of the MAE.
+    """
+    penalty = compute_violations(pg, theta, pd, R, grid).penalty().mean()
+    if mode == "ssl":
+        return (pg @ grid.cost).mean() + lam * penalty
+    valid = ~pg_star.isnan().any(dim=-1)
+    mae = (pg[valid] - pg_star[valid]).abs().mean() if valid.any() else 0.0
+    return mae + lam * penalty
 
 
 # ---------------------------------------------------------------------------
-# Training Loop
+# Datasets
+# ---------------------------------------------------------------------------
+
+
+def build_datasets(
+    instances: Instances,
+    ground_truth: tuple[np.ndarray, np.ndarray] | None,
+    device: str = "cpu",
+) -> dict[str, TensorDataset]:
+    """
+    Train/val/test split (80/10/10, in order) of (pd, R, pg_star, obj_star),
+    stored as float32. Without ground truth, pg_star and obj_star are NaN.
+    """
+    n = len(instances.pd)
+    if ground_truth is None:
+        n_gen = len(instances.r_max)
+        ground_truth = (np.full((n, n_gen), np.nan), np.full(n, np.nan))
+    pg_star, obj_star = ground_truth
+    columns = [
+        torch.tensor(x, dtype=torch.float32, device=device)
+        for x in (instances.pd, instances.R[:, None], pg_star, obj_star)
+    ]
+    n_train, n_val = int(0.8 * n), int(0.1 * n)
+    bounds = {
+        "train": (0, n_train),
+        "val": (n_train, n_train + n_val),
+        "test": (n_train + n_val, n),
+    }
+    return {
+        name: TensorDataset(*(c[start:end] for c in columns))
+        for name, (start, end) in bounds.items()
+    }
+
+
+def _unpack(
+    batch: list[torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """(pd, R, pg_star, obj_star) as float64."""
+    pd, R, pg_star, obj_star = (t.double() for t in batch)
+    return pd, R, pg_star, obj_star
+
+
+def _batch_loss(
+    model: torch.nn.Module,
+    batch: list[torch.Tensor],
+    grid: GridTensors,
+    mode: str,
+    lam: float,
+) -> torch.Tensor:
+    pd, R, pg_star, _ = _unpack(batch)
+    pg, theta = model(pd, R)
+    return proxy_loss(pg, theta, pd, R, pg_star, grid, mode, lam)
+
+
+# ---------------------------------------------------------------------------
+# Training loop
 # ---------------------------------------------------------------------------
 
 
 def train_model(
-    model,
-    datasets,
-    case,
-    problem_type,
-    mode="ssl",
-    lam=0.0,
-    mu=0.0,
-    b_branch_t=None,
-    branch_from=None,
-    branch_to=None,
-    branch_rate_t=None,
-    B_bus_t=None,
-    gen_bus_idx_t=None,
-    cost_coef_t=None,
-    pg_max_t=None,
-    r_max_t=None,
-    lr=1e-2,
-    weight_decay=1e-6,
-    batch_size_train=64,
-    batch_size_eval=256,
-    max_epochs=500,
-    patience=20,
-    lr_patience=10,
-    max_time_min=150,
-    device="cpu",
-    verbose=True,
-    epoch_callback=None,
-):
+    model: torch.nn.Module,
+    datasets: dict[str, TensorDataset],
+    grid: GridTensors,
+    mode: str = "ssl",
+    lam: float = 1.0,
+    lr: float = 1e-2,
+    weight_decay: float = 1e-6,
+    batch_size_train: int = 64,
+    batch_size_eval: int = 256,
+    max_epochs: int = 500,
+    patience: int = 20,
+    lr_patience: int = 10,
+    max_time_min: float = 150.0,
+    verbose: bool = True,
+    epoch_callback: Callable[[int, float, float, float], None] | None = None,
+) -> dict:
     """
-    Train the model with SL or SSL.
+    Train with SL or SSL, early-stopping on the validation loss. The model is
+    left with its best validation weights. epoch_callback receives
+    (epoch, train_loss, val_loss, elapsed_min) after every epoch.
 
-    Args:
-        model        : DNNModel or E2ELRModel
-        datasets     : dict with 'train', 'val', 'test' TensorDatasets
-        case         : case data dict
-        problem_type : "ed" or "edr"
-        mode         : "sl" or "ssl"
-        lam          : constraint penalty weight
-        mu           : thermal penalty weight (for SL; equals lam per paper)
-
-    Returns:
-        dict with training history (losses, best epoch, etc.)
+    Returns the training history.
     """
-    is_feasible = hasattr(model, "power_balance") and model.power_balance is not None
-
     train_loader = DataLoader(
         datasets["train"], batch_size=batch_size_train, shuffle=True
     )
-    val_loader = DataLoader(datasets["val"], batch_size=batch_size_eval, shuffle=False)
+    val_loader = DataLoader(datasets["val"], batch_size=batch_size_eval)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=0.1,
-        patience=lr_patience,
+        optimizer, mode="min", factor=0.1, patience=lr_patience
     )
 
     best_val_loss = float("inf")
     best_state = None
     epochs_no_improve = 0
     history = {"train_loss": [], "val_loss": []}
-
     start_time = time.time()
 
+    def elapsed_min() -> float:
+        return (time.time() - start_time) / 60.0
+
     for epoch in range(1, max_epochs + 1):
-        # Check time limit
-        elapsed_min = (time.time() - start_time) / 60.0
-        if elapsed_min > max_time_min:
+        if elapsed_min() > max_time_min:
             if verbose:
                 print(f"  Time limit ({max_time_min} min) reached at epoch {epoch}.")
             break
 
-        # --- Training ---
         model.train()
         train_losses = []
         for batch in train_loader:
-            pd_b, R_b, pg_star_b, obj_star_b = batch
-            D_b = pd_b.sum(dim=-1, keepdim=True)
-
-            # Forward pass -> (pg, theta)
-            if is_feasible:
-                pg_hat, theta = model(pd_b, D_b, R_b)
-            else:
-                pg_hat, theta = model(pd_b)
-
-            # Loss
-            if mode == "sl":
-                loss = loss_sl(
-                    pg_hat,
-                    theta,
-                    pg_star_b,
-                    pd_b,
-                    D_b,
-                    cost_coef_t,
-                    pg_max_t,
-                    r_max_t,
-                    R_b,
-                    b_branch_t,
-                    branch_from,
-                    branch_to,
-                    branch_rate_t,
-                    B_bus_t,
-                    gen_bus_idx_t,
-                    lam,
-                    mu,
-                    problem_type,
-                    is_feasible,
-                )
-            else:
-                loss = loss_ssl(
-                    pg_hat,
-                    theta,
-                    pd_b,
-                    D_b,
-                    cost_coef_t,
-                    pg_max_t,
-                    r_max_t,
-                    R_b,
-                    b_branch_t,
-                    branch_from,
-                    branch_to,
-                    branch_rate_t,
-                    B_bus_t,
-                    gen_bus_idx_t,
-                    lam,
-                    problem_type,
-                    is_feasible,
-                )
-
+            loss = _batch_loss(model, batch, grid, mode, lam)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_losses.append(loss.detach())
-
         avg_train = torch.stack(train_losses).mean().item()
-        history["train_loss"].append(avg_train)
 
-        # --- Validation ---
         model.eval()
-        val_losses = []
         with torch.no_grad():
-            for batch in val_loader:
-                pd_b, R_b, pg_star_b, obj_star_b = batch
-                D_b = pd_b.sum(dim=-1, keepdim=True)
-
-                if is_feasible:
-                    pg_hat, theta = model(pd_b, D_b, R_b)
-                else:
-                    pg_hat, theta = model(pd_b)
-
-                if mode == "sl":
-                    loss = loss_sl(
-                        pg_hat,
-                        theta,
-                        pg_star_b,
-                        pd_b,
-                        D_b,
-                        cost_coef_t,
-                        pg_max_t,
-                        r_max_t,
-                        R_b,
-                        b_branch_t,
-                        branch_from,
-                        branch_to,
-                        branch_rate_t,
-                        B_bus_t,
-                        gen_bus_idx_t,
-                        1.0,
-                        1.0,
-                        problem_type,
-                        is_feasible,
-                    )
-                else:
-                    loss = loss_ssl(
-                        pg_hat,
-                        theta,
-                        pd_b,
-                        D_b,
-                        cost_coef_t,
-                        pg_max_t,
-                        r_max_t,
-                        R_b,
-                        b_branch_t,
-                        branch_from,
-                        branch_to,
-                        branch_rate_t,
-                        B_bus_t,
-                        gen_bus_idx_t,
-                        1.0,
-                        problem_type,
-                        is_feasible,
-                    )
-                val_losses.append(loss.detach())
-
+            val_losses = [
+                _batch_loss(model, b, grid, mode, VAL_LAM) for b in val_loader
+            ]
         avg_val = torch.stack(val_losses).mean().item()
-        history["val_loss"].append(avg_val)
 
+        history["train_loss"].append(avg_train)
+        history["val_loss"].append(avg_val)
         scheduler.step(avg_val)
 
-        # Early stopping
         if avg_val < best_val_loss:
             best_val_loss = avg_val
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -502,9 +283,8 @@ def train_model(
                 f"  Epoch {epoch:3d} | train {avg_train:.6f} | val {avg_val:.6f} | "
                 f"lr {optimizer.param_groups[0]['lr']:.1e} | no_improve {epochs_no_improve}"
             )
-
         if epoch_callback is not None:
-            epoch_callback(epoch, avg_train, avg_val, (time.time() - start_time) / 60.0)
+            epoch_callback(epoch, avg_train, avg_val, elapsed_min())
 
         if epochs_no_improve >= patience:
             if verbose:
@@ -513,19 +293,16 @@ def train_model(
                 )
             break
 
-    # Restore best model
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    elapsed_min = (time.time() - start_time) / 60.0
     if verbose:
         print(
-            f"  Training done in {elapsed_min:.1f} min. Best val loss: {best_val_loss:.6f}"
+            f"  Training done in {elapsed_min():.1f} min. Best val loss: {best_val_loss:.6f}"
         )
-
     history["best_val_loss"] = best_val_loss
-    history["training_time_min"] = elapsed_min
-    return model, history
+    history["training_time_min"] = elapsed_min()
+    return history
 
 
 # ---------------------------------------------------------------------------
@@ -535,188 +312,57 @@ def train_model(
 
 @torch.no_grad()
 def evaluate_model(
-    model,
-    dataset,
-    case,
-    problem_type,
-    b_branch_t,
-    branch_from,
-    branch_to,
-    branch_rate_t,
-    B_bus_t,
-    gen_bus_idx_t,
-    cost_coef_t,
-    pg_max_t,
-    r_max_t,
-    batch_size=256,
-    tol=1e-4,
-    device="cpu",
-    mode="ssl",
-    lam=1.0,
-    mu=1.0,
-):
+    model: torch.nn.Module,
+    dataset: TensorDataset,
+    grid: GridTensors,
+    mode: str = "ssl",
+    lam: float = 1.0,
+    batch_size: int = 256,
+    tol: float = 1e-4,
+) -> dict[str, float]:
     """
-    Evaluate model on a dataset and compute:
-      - Test loss (using the same loss function as during training)
-      - Mean optimality gap
-      - Feasibility rate (% satisfying all hard constraints)
-      - Mean power balance violation
-      - Mean reserve shortage (for ED-R)
-      - Mean DC power flow violation
-
-    Args:
-        mode : "sl" or "ssl" — selects which loss function to apply
-        lam  : constraint penalty weight (normalised to 1.0, matching validation)
-        mu   : thermal penalty weight for SL (equals lam per paper)
-
-    Returns dict with metrics.
+    Metrics on a dataset:
+      - test loss (training loss with penalty weight lam)
+      - mean and shifted-geometric-mean optimality gap of the penalized
+        objective, over instances with a ground-truth solution
+      - feasibility rate: bounds, power balance, reserves and DC power flow
+        all within tol (thermal limits are soft)
+      - mean power balance violation, reserve shortage and DC violation
     """
-    is_feasible = hasattr(model, "power_balance") and model.power_balance is not None
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     model.eval()
+    losses, gaps, pb, reserve, dc, feasible = [], [], [], [], [], []
+    for batch in DataLoader(dataset, batch_size=batch_size):
+        pd, R, pg_star, obj_star = _unpack(batch)
+        pg, theta = model(pd, R)
+        v = compute_violations(pg, theta, pd, R, grid)
 
-    all_test_losses = []
-    all_gaps = []
-    all_pb_viol = []
-    all_res_short = []
-    all_dc_viol = []
-    all_feasible = []
+        losses.append(proxy_loss(pg, theta, pd, R, pg_star, grid, mode, lam))
+        z_hat = pg @ grid.cost + v.penalty()
+        gaps.append((z_hat - obj_star) / obj_star.abs().clamp(min=1e-8))  # NaN w/o GT
 
-    with torch.no_grad():
-        for batch in loader:
-            pd_b, R_b, pg_star_b, obj_star_b = batch
-            D_b = pd_b.sum(dim=-1, keepdim=True)
+        in_bounds = ((pg >= -tol) & (pg <= grid.pg_max + tol)).all(dim=-1)
+        feasible.append(
+            in_bounds & (v.power_balance < tol) & (v.reserve < tol) & (v.dc < tol)
+        )
+        pb.append(v.power_balance)
+        reserve.append(v.reserve)
+        dc.append(v.dc)
 
-            if is_feasible:
-                pg_hat, theta = model(pd_b, D_b, R_b)
-            else:
-                pg_hat, theta = model(pd_b)
+    def cat(xs: list[torch.Tensor]) -> np.ndarray:
+        return torch.cat(xs).double().cpu().numpy()
 
-            # --- Test loss ---
-            if mode == "sl":
-                batch_loss = loss_sl(
-                    pg_hat,
-                    theta,
-                    pg_star_b,
-                    pd_b,
-                    D_b,
-                    cost_coef_t,
-                    pg_max_t,
-                    r_max_t,
-                    R_b,
-                    b_branch_t,
-                    branch_from,
-                    branch_to,
-                    branch_rate_t,
-                    B_bus_t,
-                    gen_bus_idx_t,
-                    lam,
-                    mu,
-                    problem_type,
-                    is_feasible,
-                )
-            else:
-                batch_loss = loss_ssl(
-                    pg_hat,
-                    theta,
-                    pd_b,
-                    D_b,
-                    cost_coef_t,
-                    pg_max_t,
-                    r_max_t,
-                    R_b,
-                    b_branch_t,
-                    branch_from,
-                    branch_to,
-                    branch_rate_t,
-                    B_bus_t,
-                    gen_bus_idx_t,
-                    lam,
-                    problem_type,
-                    is_feasible,
-                )
-            all_test_losses.append(batch_loss.detach())
-
-            # --- Compute penalized objective for predictions ---
-            gen_cost = (cost_coef_t.unsqueeze(0) * pg_hat).sum(dim=-1)
-
-            xi = compute_thermal_violations(
-                theta, b_branch_t, branch_from, branch_to, branch_rate_t
-            )
-            thermal = M_TH * xi.sum(dim=-1)
-
-            pb_viol = compute_power_balance_violation(pg_hat, D_b).squeeze(-1)
-            pb_pen = M_PB * pb_viol
-
-            dc_viol = compute_dc_violations(
-                theta, pg_hat, pd_b, B_bus_t, gen_bus_idx_t
-            ).squeeze(-1)
-            dc_pen = M_DC * dc_viol
-
-            if problem_type == "edr":
-                res_short = compute_reserve_shortage(
-                    pg_hat, pg_max_t, r_max_t, R_b
-                ).squeeze(-1)
-                res_pen = M_RES * res_short
-            else:
-                res_short = torch.zeros_like(pb_viol)
-                res_pen = torch.zeros_like(pb_viol)
-
-            z_hat = gen_cost + thermal + pb_pen + res_pen + dc_pen
-            z_star = obj_star_b
-
-            # Optimality gap (only for instances with valid ground truth)
-            valid = ~torch.isnan(z_star)
-            gaps = torch.where(
-                valid,
-                (z_hat - z_star) / z_star.abs().clamp(min=1e-8),
-                torch.full_like(z_hat, float("nan")),
-            )
-
-            # Feasibility check
-            bounds_ok = (pg_hat >= -tol).all(dim=-1) & (
-                pg_hat <= pg_max_t.unsqueeze(0) + tol
-            ).all(dim=-1)
-            pb_ok = pb_viol < tol
-            dc_ok = dc_viol < tol
-            if problem_type == "edr":
-                res_ok = res_short < tol
-                feasible = bounds_ok & pb_ok & dc_ok & res_ok
-            else:
-                feasible = bounds_ok & pb_ok & dc_ok
-
-            all_gaps.append(gaps)
-            all_pb_viol.append(pb_viol)
-            all_res_short.append(res_short)
-            all_dc_viol.append(dc_viol)
-            all_feasible.append(feasible)
-
-    test_loss = torch.stack(all_test_losses).mean().item()
-
-    all_gaps = torch.cat(all_gaps).cpu().numpy()
-    all_pb_viol = torch.cat(all_pb_viol).cpu().numpy()
-    all_res_short = torch.cat(all_res_short).cpu().numpy()
-    all_dc_viol = torch.cat(all_dc_viol).cpu().numpy()
-    all_feasible = torch.cat(all_feasible).cpu().numpy()
-
-    # Shifted geometric mean for gaps (shift s=0.01 i.e. 1%)
-    s = 0.01
+    all_gaps = cat(gaps)
     valid_gaps = all_gaps[~np.isnan(all_gaps)]
-    if len(valid_gaps) > 0:
-        sgm_gap = np.exp(np.mean(np.log(valid_gaps + s))) - s
-    else:
-        sgm_gap = float("nan")
-
-    results = {
-        "test_loss": test_loss,
-        "mean_gap_pct": 100.0 * np.nanmean(valid_gaps)
-        if len(valid_gaps) > 0
+    shift = 0.01  # shifted geometric mean with a 1% shift
+    has_gaps = len(valid_gaps) > 0
+    return {
+        "test_loss": torch.stack(losses).mean().item(),
+        "mean_gap_pct": 100.0 * valid_gaps.mean() if has_gaps else float("nan"),
+        "sgm_gap_pct": 100.0 * (np.exp(np.mean(np.log(valid_gaps + shift))) - shift)
+        if has_gaps
         else float("nan"),
-        "sgm_gap_pct": 100.0 * sgm_gap,
-        "feasibility_rate_pct": 100.0 * np.mean(all_feasible),
-        "mean_pb_violation_pu": np.mean(all_pb_viol),
-        "mean_reserve_shortage_pu": np.mean(all_res_short),
-        "mean_dc_violation_pu": np.mean(all_dc_viol),
+        "feasibility_rate_pct": 100.0 * cat(feasible).mean(),
+        "mean_pb_violation_pu": cat(pb).mean(),
+        "mean_reserve_shortage_pu": cat(reserve).mean(),
+        "mean_dc_violation_pu": cat(dc).mean(),
     }
-
-    return results

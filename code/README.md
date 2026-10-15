@@ -25,7 +25,7 @@ Trains neural network proxies that approximate solutions to the Economic Dispatc
 
 | Mode | Description |
 |------|-------------|
-| `sl` | Supervised learning (minimize MSE to solver solution) |
+| `sl` | Supervised learning (minimize MAE to solver solution + constraint penalties) |
 | `ssl` | Self-supervised learning (minimize cost + constraint penalties directly) |
 
 ## Installation
@@ -34,7 +34,20 @@ Trains neural network proxies that approximate solutions to the Economic Dispatc
 pip install -r requirements.txt
 ```
 
+Physical quantities (repairs, DC projection, violations) are computed in float64;
+the network backbone runs in float32. Use `--device cpu` or `cuda` (`auto` picks
+CUDA if available); MPS is not supported because it lacks float64.
+
 ## Usage
+
+### Generate ground truth
+
+```bash
+python data_utils.py --case data/pglib_opf_case300_ieee.m --problem edr
+```
+
+Solves every instance with HiGHS and saves `checkpoints/gt_<case>_<problem>_n<N>_s<seed>.npz`,
+which `main.py` loads to compute optimality gaps (and needs for `--mode sl`).
 
 ### Train a single model
 
@@ -63,6 +76,8 @@ python main.py \
 | `--patience` | `20` | Early-stopping patience |
 | `--max_time` | `150.0` | Max training time (minutes) |
 | `--seed` | `42` | Random seed |
+| `--skip_solve` | off | Don't solve the LPs when no ground-truth checkpoint exists |
+| `--results_file` | none | Save test metrics as JSON |
 
 ### Hyperparameter search
 
@@ -75,23 +90,27 @@ Uses [Ray Tune](https://docs.ray.io/en/latest/tune/index.html) with Optuna. Resu
 ### Run all combinations
 
 ```bash
-python run_all.py
+python run_all.py    # hyperparameter search for every combination
+python train_all.py  # train + evaluate each combination with its best config
 ```
 
-Trains all combinations of `{dnn, e2elr, e2elrdc}` × `{ed, edr}` × `{ieee300, pegase1354}`.
+Both cover `{dnn, e2elr, e2elrdc}` × `{edr}` × `{ieee300, pegase1354}`.
+`train_all.py` writes test metrics to `train_results/`.
 
 ## File Structure
 
 ```
 code/
 ├── main.py          # Entry point: data loading, training, evaluation
-├── models.py        # DNN, E2ELR, E2ELRDCModel architectures + repair layers
+├── models.py        # DispatchProxy (dnn / e2elr / e2elrdc) + repair layers
 ├── train.py         # Dataset construction, training loop, evaluation
-├── data_utils.py    # MATPOWER parsing, instance generation, solver interface
+├── data_utils.py    # MATPOWER parsing, instance generation, LP ground truth
 ├── hparam_search.py # Hyperparameter tuning with Ray Tune + Optuna
-├── run_all.py       # Batch runner for all model/problem/case combinations
+├── run_all.py       # Hyperparameter search for all combinations
+├── train_all.py     # Training with the best configs for all combinations
 ├── requirements.txt # Python dependencies
 ├── data/            # MATPOWER .m case files
 ├── checkpoints/     # Precomputed ground-truth solution caches (.npz)
-└── models/          # Saved model weights (.eqx)
+├── ray_results/     # Best hyperparameter configs
+└── train_results/   # Test metrics per combination
 ```
