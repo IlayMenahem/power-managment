@@ -6,6 +6,7 @@ Usage:
     python main.py --case data/pglib_opf_case300_ieee.m --model e2elr --problem ed --mode ssl
     python main.py --case data/pglib_opf_case300_ieee.m --model dnn --problem edr --mode sl
     python main.py --case data/pglib_opf_case300_ieee.m --model e2elr --problem edr --line_limits hard
+    python main.py --case data/pglib_opf_case300_ieee.m --model e2elr_line --problem edr --line_limits hard
 
 Reference: arXiv 2304.11726v2
 """
@@ -21,6 +22,7 @@ from mlx.utils import tree_flatten
 from models import ARCHITECTURES, DispatchProxy
 from benchmarks import inference_time_ms, repair_vs_projection
 from train import (
+    ANCHOR_MARGIN,
     GridTensors,
     build_datasets,
     default_lam,
@@ -93,6 +95,12 @@ def parse_args() -> argparse.Namespace:
         help="Constraint penalty weight (default: 1.0 for ssl, 1e-4 for sl, 0 for "
         "e2elr with ssl)",
     )
+    parser.add_argument(
+        "--anchor_margin",
+        type=float,
+        default=ANCHOR_MARGIN,
+        help="e2elr_line: the anchor is trained to keep |flow| <= (1 - margin) rate",
+    )
     parser.add_argument("--lr", type=float, default=1e-2, help="Initial learning rate")
     parser.add_argument(
         "--batch_size", type=int, default=64, help="Training batch size"
@@ -149,6 +157,11 @@ def print_results(
         f"shortage {results['reserve_violation_sgm_pu']:.4g} p.u. (SGM of infeasible)"
     )
     print(f"  Line Feasibility Rate:   {results['line_feasibility_rate_pct']:.2f}%")
+    print(f"  DC-OPF Feasibility Rate: {results['opf_feasibility_rate_pct']:.2f}%")
+    if not np.isnan(results["anchor_line_feasibility_rate_pct"]):
+        print(
+            f"  Anchor Line Feasibility: {results['anchor_line_feasibility_rate_pct']:.2f}%"
+        )
     print(f"  Mean Thermal Violation:  {results['mean_thermal_violation_pu']:.6f} p.u.")
     print(f"  Mean Max DC Residual:    {results['mean_max_dc_residual_pu']:.2e} p.u.")
     print(f"  Inference Time:          {results['inference_ms_per_256']:.2f} ms / 256")
@@ -177,6 +190,7 @@ def save_results(
             "lr": args.lr,
             "batch_size": args.batch_size,
             "lam": args.lam,
+            "anchor_margin": args.anchor_margin,
         },
         "training_time_min": history["training_time_min"],
         "best_val_loss": history["best_val_loss"],
@@ -241,7 +255,7 @@ def main() -> None:
     n_params = sum(p.size for _, p in tree_flatten(model.trainable_parameters()))
     print(f"\nModel: {args.model.upper()} ({n_params:,} parameters)")
 
-    grid = GridTensors.from_case(case, instances.r_max)
+    grid = GridTensors.from_case(case, instances.r_max, args.anchor_margin)
     if args.lam is None:
         args.lam = default_lam(args.mode, args.model)
     lam = args.lam

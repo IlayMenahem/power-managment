@@ -30,6 +30,7 @@ from multiprocessing import Pool
 import numpy as np
 from scipy import sparse
 from scipy.optimize import linprog
+from scipy.sparse.linalg import splu
 
 # MISO-based penalty prices (Section V-C), shared by the LP and the training losses.
 M_TH = 1500.0  # thermal violation: 1500 $/MW
@@ -143,6 +144,20 @@ def bus_susceptance(case: Case) -> sparse.csr_matrix:
     """DC power flow matrix B = A^T diag(b) A, so that B @ theta = pg_bus - pd."""
     A = incidence_matrix(case)
     return (A.T @ sparse.diags(case.b_branch) @ A).tocsr()
+
+
+def ptdf(case: Case) -> np.ndarray:
+    """
+    Dense PTDF matrix Phi (n_branch, n_bus): the branch flows of the injections
+    pg_bus - pd are Phi @ (pg_bus - pd), with theta_ref = 0 (the reference
+    bus column is zero).
+    """
+    non_slack = np.flatnonzero(np.arange(case.n_bus) != case.slack)
+    B_r = bus_susceptance(case)[non_slack][:, non_slack].tocsc()
+    F = (sparse.diags(case.b_branch) @ incidence_matrix(case))[:, non_slack]
+    Phi = np.zeros((case.n_branch, case.n_bus))
+    Phi[:, non_slack] = F @ splu(B_r).solve(np.eye(len(non_slack)))
+    return Phi
 
 
 # ---------------------------------------------------------------------------

@@ -1,12 +1,13 @@
 # E2ELR — MLX version
 
 MLX port of `../code/` (PyTorch), changed to follow the paper more closely (see below).
-Models `dnn` and `e2elr`, problems `ed` and `edr`, training modes `sl` and `ssl`, and
-thermal limits `soft` (paper) or `hard`.
+Models `dnn`, `e2elr` and `e2elr_line` (E2ELR + line flow repair), problems `ed` and `edr`,
+training modes `sl` and `ssl`, and thermal limits `soft` (paper) or `hard`.
 
 ```bash
 pip install -r requirements.txt   # needs Python >= 3.10
 python main.py --case data/pglib_opf_case300_ieee.m --model e2elr --problem edr --mode ssl
+python main.py --case data/pglib_opf_case300_ieee.m --model e2elr_line --problem edr --line_limits hard
 python data_utils.py --case data/pglib_opf_case300_ieee.m --problem edr --line_limits hard
 python train_all.py               # the paper's training settings, no search
 ```
@@ -19,6 +20,15 @@ About 20% of the paper's ED-R instances have no solution when thermal limits are
 sampling: a pool of `ceil(1.35 n)` instances is generated as in the paper, each is solved
 with hard limits, and the first `n` feasible ones are kept. Checkpoints store the kept
 indices, not the loads, so `gt_{case}_{problem}_{soft|hard}_n{n}_s{seed}.npz` is small.
+
+## Line flow repair (`e2elr_line`)
+A second head predicts an anchor dispatch. The dispatch and the anchor both go through the
+E2ELR repairs, then the output is `(1 - alpha) pg + alpha anchor` with the smallest `alpha`
+in [0, 1] that puts every branch within its limit (`line_flow_step`, closed form, flows from
+a dense PTDF). Bounds, power balance and reserves hold by convexity; the hard thermal limits
+hold whenever the anchor satisfies them. The SSL loss adds
+`M_TH * sum(relu(|f_anchor| - (1 - anchor_margin) rate))`, `--anchor_margin` 0.05 by default.
+The repair-vs-projection benchmark projects onto the set with the hard thermal limits.
 
 ## Precision
 The backbone (Linear/BatchNorm/ReLU/Dropout) runs in float32 on the GPU. Repair layers,

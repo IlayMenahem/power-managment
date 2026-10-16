@@ -12,7 +12,11 @@
 \usepackage{multicol}
 
 \usepackage{enumitem}
-\usepackage[margin=1in]{geometry}
+\usepackage[a4paper, margin=0.75in, top=0.8in, bottom=0.8in]{geometry}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric}
+
+\newtheorem{proposition}{Proposition}
 
 \begin{document}
 
@@ -28,6 +32,8 @@
 \subsection*{Sets and Indices}
 \begin{itemize}
     \item[$i, j \in \mathcal{N}$] Buses
+    \item[$\text{ref} \in \mathcal{N}$] Reference (slack) bus
+    \item[$g \in \mathcal{G}$] Generators
     \item[$(i,j) \in \mathcal{E}$] Branches (transmission lines)
 \end{itemize}
 
@@ -36,193 +42,176 @@
     \item[$\boldsymbol{p}$] Generator active power dispatch vector
     \item[$\boldsymbol{r}$] Generator reserve dispatch vector
     \item[$\theta$] Bus voltage angle vector
+    \item[$\xi$] Thermal limit violation vector (soft limits only)
+    \item[$f$] Branch flow vector
+    \item[$\boldsymbol{p}^a$] Anchor dispatch vector
+    \item[$\alpha$] Line flow repair step
 \end{itemize}
 
 \subsection*{Parameters}
 \begin{itemize}
     \item[$\boldsymbol{d}$] Active power demand vector
-    \item[$c(\cdot)$] Production cost function
+    \item[$\boldsymbol{c}$] Linear production cost vector
+    \item[$\underline{\boldsymbol{p}}$] Minimum generator output vector
     \item[$\overline{\boldsymbol{p}}$] Maximum generator output vector
     \item[$\overline{\boldsymbol{r}}$] Maximum generator reserve vector
     \item[$R$] Minimum reserve requirement
     \item[$\boldsymbol{B}$] Bus susceptance matrix
-    \item[$x_{ij}$] Reactance of branch $(i,j)$
+    \item[$\boldsymbol{B}_r$] $\boldsymbol{B}$ without the row and the column of the reference bus
+    \item[$\boldsymbol{\Phi}$] PTDF matrix
+    \item[$\boldsymbol{C}_g$] Generator-to-bus incidence matrix
+    \item[$b_{ij}$] Susceptance of branch $(i,j)$
     \item[$\overline{P}_{ij}$] Thermal limit of branch $(i,j)$
-    \item[$\boldsymbol{B}^{\dagger}$] Moore-Penrose pseudo-inverse of $\boldsymbol{B}$
     \item[$\mathbf{e}$] Vector of ones
     \item[$M_{pb}$] Power balance penalty multiplier
     \item[$M_{res}$] Reserve penalty multiplier
     \item[$M_{th}$] Thermal limit penalty multiplier
-    \item[$M_{dc}$] DC power flow penalty multiplier
+    \item[$\delta$] Anchor thermal limit margin
 \end{itemize}
 
 \end{multicols}
 \section{Introduction}
-The paper~\cite{Chen2023_E2ELR} proposes an End-to-End Learning and Repair (E2ELR) architecture for training optimization proxies for economic dispatch problems. That is, at the end of the network, there are repair layers that ensure power balance and reserve. As stated in the paper~\cite{Chen2023_E2ELR}, if there is a feasible solution, the repair layers will output a feasible solution, and if there is no feasible solution, the repair layers will minimize in some sense the violation of the constraints. In this work, we merge the ED problem with the DC-OPF problem~\cite{Stott2009_DCPF}, and we propose to add a layer that will ensure the satisfaction of the DC power flow equations.
+The paper~\cite{Chen2023_E2ELR} proposes an End-to-End Learning and Repair (E2ELR) architecture for training optimization proxies for economic dispatch problems. Repair layers at the end of the network enforce power balance and the reserve requirement: if the instance is feasible, their output is feasible, and otherwise they minimize, in some sense, the constraint violation. The thermal limits of the transmission lines, however, are soft in the paper, so a prediction may overload a line, and the overload is only penalized. In this work, we extend the ED problem to a DC-OPF problem~\cite{Stott2009_DCPF} with hard thermal limits, and we propose a closed-form line flow repair layer that enforces the thermal limits whenever a second dispatch, which the network also predicts, satisfies them. On the ieee300 and pegase1354 systems, the resulting model, E2ELR-L, almost halves the optimality gap of E2ELR and raises the share of feasible predictions from 92.7\% and 91.0\% to 99.6\% and 100\%, while remaining much faster than restoring feasibility with a solver.
 
 
 \section{Problem Statement}
 
-Here is a problem statement that merges the problem statement in the paper with the DC-OPF problem statement.
-
+We extend the ED-R problem of the paper~\cite{Chen2023_E2ELR} to a DC optimal power flow (DC-OPF) problem~\cite{Stott2009_DCPF}:
 \begin{align}
-    \min_{\boldsymbol{p}, \boldsymbol{r}, \theta} c(\boldsymbol{p}) + penalty(\boldsymbol{p}, \boldsymbol{r}, \theta)
+    \min_{\boldsymbol{p}, \theta} \quad & \boldsymbol{c}^T \boldsymbol{p} \\
+    \text{s.t.} \quad
+    & \underline{\boldsymbol{p}} \leq \boldsymbol{p} \leq \overline{\boldsymbol{p}}
+      && \text{(generator output limits)} \label{eq:r_plim} \\
+    & \mathbf{e}^T \boldsymbol{p} = \mathbf{e}^T \boldsymbol{d}
+      && \text{(global power balance)} \label{eq:r_pb} \\
+    & R \leq \mathbf{e}^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})
+      && \text{(minimum reserve requirement)} \label{eq:r_res} \\
+    & \boldsymbol{B} \theta = \boldsymbol{C}_g \boldsymbol{p} - \boldsymbol{d}, \quad \theta_{\text{ref}} = 0
+      && \text{(DC power flow)} \label{eq:r_dcpf} \\
+    & |b_{ij} (\theta_i - \theta_j)| \leq \overline{P}_{ij}
+      \quad \forall (i,j) \in \mathcal{E}.
+      && \text{(hard thermal limits)} \label{eq:r_th}
 \end{align}
 
-subject to
-\begin{enumerate}
-    \item $e^T\boldsymbol{p} = e^T\boldsymbol{d}$ (global power balance)
-    \item $e^T\boldsymbol{r} \geq R$ (minimum reserve requirement)
-    \item $\boldsymbol{p} + \boldsymbol{r} \leq \overline{\boldsymbol{p}}$ (generator output limits)
-    \item $0 \leq \boldsymbol{p} \leq \overline{\boldsymbol{p}}$ (generator output limits)
-    \item $0 \leq \boldsymbol{r} \leq \overline{\boldsymbol{r}}$ (generator reserve limits)
-    \item $\forall i, j$ $\frac{\theta_i - \theta_j}{x_{ij}} \leq \overline{P}_{ij}$ (line flow limits)
-    \item $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$ (DC power flow equations~\cite{Stott2009_DCPF})
-\end{enumerate}
-and for models which don't guarantee the feasibility of solution, we add penalty terms to the cost function.
-\[penalty_{pb}(\hat{\boldsymbol{p}}) = M_{pb} \cdot |e^T\hat{\boldsymbol{p}} - e^T\boldsymbol{d}|\]
-\[penalty_{res}(\boldsymbol{r}) = M_{res} \cdot Relu(R - e^T \boldsymbol{r})\]
-\[penalty_{th}(\hat{\boldsymbol{p}}, \theta) = M_{th} \cdot \sum_{i,j} Relu(\frac{\theta_i - \theta_j}{x_{ij}} - \overline{P}_{ij})\]
-\[penalty_{dc}(\hat{\boldsymbol{p}}, \theta) = M_{dc} \cdot \|\boldsymbol{B}\theta - (\hat{\boldsymbol{p}} - \boldsymbol{d})\|_1\]
-\[penalty(\hat{\boldsymbol{p}}, \theta) = penalty_{pb}(\hat{\boldsymbol{p}}) + penalty_{res}(\hat{\boldsymbol{r}}) + penalty_{th}(\hat{\boldsymbol{p}}, \theta) + penalty_{dc}(\hat{\boldsymbol{p}}, \theta)\]
+With the reserves $\boldsymbol{r}$ eliminated as in the paper, this problem is equivalent to the ED-R problem of the paper~\cite{Chen2023_E2ELR}, except for the thermal limits: the paper uses soft limits, replacing \eqref{eq:r_th} by $|b_{ij}(\theta_i - \theta_j)| \leq \overline{P}_{ij} + \xi_{ij}$, $\xi \geq 0$, and adding $M_{th} \mathbf{e}^T \xi$ to the objective.
 
-As seen in the paper~\cite{Chen2023_E2ELR}, conditions 2, 3, and 5 are equivalent to the condition $R \leq e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})$, and removing $\boldsymbol{r}$ from the optimization variables.
-
-Thus the problem can be rewritten as:
+For models whose output $\hat{\boldsymbol{p}}$ may be infeasible, we add a penalty to the cost function. In this work, $\theta$ is always computed from $\hat{\boldsymbol{p}}$ (Section~\ref{sec:angles}), so \eqref{eq:r_dcpf} holds and needs no penalty:
 \begin{align}
-    \min_{\boldsymbol{p}, \theta} c(\boldsymbol{p}) + penalty(\boldsymbol{p}, \theta)
+    \operatorname{penalty}(\hat{\boldsymbol{p}}) = {} & M_{pb} |\mathbf{e}^T \hat{\boldsymbol{p}} - \mathbf{e}^T \boldsymbol{d}| + M_{res} \operatorname{Relu}(R - \mathbf{e}^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \hat{\boldsymbol{p}})) \nonumber \\
+    & + M_{th} \sum_{(i,j) \in \mathcal{E}} \operatorname{Relu}(|b_{ij}(\theta_i - \theta_j)| - \overline{P}_{ij}). \label{eq:penalty}
 \end{align}
-subject to
-\begin{enumerate}
-    \item $0 \leq \boldsymbol{p} \leq \overline{\boldsymbol{p}}$ (generator output limits)
-    \item $e^T\boldsymbol{p} = e^T\boldsymbol{d}$ (global power balance)
-    \item $R \leq e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})$ (minimum reserve requirement)
-    \item $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$ (DC power flow equations)
-    \item $\forall i, j$ $\frac{\theta_i - \theta_j}{x_{ij}} \leq \overline{P}_{ij}$ (line flow limits)
-\end{enumerate}
 
-where the penalty of the reserve constraint is now:
-\[penalty_{res}(\hat{\boldsymbol{p}}) = M_{res} \cdot Relu(R - e^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \hat{\boldsymbol{p}}))\]
-
-One should note that the penalty terms in the paper are all much greater than the cost of producing energy, that is to say the main concern of the neural network training process is to satisfy the constraints, and not to minimize the cost function. thus, it is easy to see why adding repair layers would yield a much more effective network.
+The penalty multipliers of the paper are much larger than the cost of producing energy, so training a model without repair layers mainly reduces constraint violations rather than cost. This explains why repair layers, which enforce the constraints by construction, yield much better models.
 
 \section{Proposed Methods}
-All the networks in this work will also output voltage angles $\theta$.
+\subsection{Voltage angles} \label{sec:angles}
+The networks in this work predict only the dispatch $\boldsymbol{p}$, and the voltage angles are computed from it. Let $(\cdot)_r$ denote a bus vector without its reference entry. For a connected network, $\boldsymbol{B}_r$ is nonsingular, and
+\begin{align}
+    \theta_{\text{ref}}(\boldsymbol{p}) = 0, \qquad \theta_r(\boldsymbol{p}) = \boldsymbol{B}_r^{-1} (\boldsymbol{C}_g \boldsymbol{p} - \boldsymbol{d})_r
+\end{align}
+is the unique solution of \eqref{eq:r_dcpf}, because the equation of the reference bus, which is dropped, holds whenever the power balance \eqref{eq:r_pb} holds. The branch flows $f_{ij}(\boldsymbol{p}) = b_{ij}(\theta_i(\boldsymbol{p}) - \theta_j(\boldsymbol{p}))$ are then the PTDF flows $\boldsymbol{\Phi}(\boldsymbol{C}_g \boldsymbol{p} - \boldsymbol{d})$ of the paper~\cite{Chen2023_E2ELR}, and they are affine in $\boldsymbol{p}$. The DC power flow equations therefore hold by construction, and the only constraint of \eqref{eq:r_plim}--\eqref{eq:r_th} that the repair layers of E2ELR do not enforce is the thermal limit \eqref{eq:r_th}.
 
-In this work, in addition to the repair layers introduced in E2ELR, we propose to add a theta repair layer for the equality constraint $\boldsymbol{B} \theta = \boldsymbol{p} - \boldsymbol{d}$. This repair layer will find the $\theta^*$ which satisfies the DC power flow equation, and is closest to the $\theta$ the neural network outputs. Finding $\theta^*$ can be viewed as the following optimization problem:
+\subsection{Line flow repair layer}
+Unlike \eqref{eq:r_plim}--\eqref{eq:r_res}, the thermal limits couple the generators through the network, so finding a dispatch that satisfies \eqref{eq:r_plim}--\eqref{eq:r_th} is a general linear program, and we know of no closed-form map that takes an arbitrary dispatch to one that satisfies them whenever the instance is feasible. The proposed layer therefore uses a second dispatch, the \emph{anchor}, which the network predicts with a second output head of the same form as the first. The power balance and reserve repair layers of E2ELR map the dispatch and the anchor to $\tilde{\boldsymbol{p}}$ and $\boldsymbol{p}^a$, which satisfy \eqref{eq:r_plim}--\eqref{eq:r_res}. With $\tilde{f} = f(\tilde{\boldsymbol{p}})$ and $f^a = f(\boldsymbol{p}^a)$, the line flow repair layer outputs
 \begin{align}
-    \min_{\theta'} \|\theta' - \theta\|_2^2 \quad \text{s.t.} \quad \boldsymbol{B} \theta' = \boldsymbol{p} - \boldsymbol{d}
+    \hat{\boldsymbol{p}} = (1 - \alpha) \tilde{\boldsymbol{p}} + \alpha \boldsymbol{p}^a, \qquad
+    \alpha = \max_{(i,j) \in \mathcal{E}} \frac{o_{ij}}{o_{ij} + s_{ij}}, \label{eq:line_repair}
 \end{align}
-The solution to this problem is the projection of $\theta$ onto the affine subspace $\{\theta' : \boldsymbol{B} \theta' = \boldsymbol{p} - \boldsymbol{d}\}$, which is given by:
+where $o_{ij} = \operatorname{Relu}(|\tilde{f}_{ij}| - \overline{P}_{ij})$ is the overload of branch $(i,j)$ at $\tilde{\boldsymbol{p}}$, $s_{ij} = \operatorname{Relu}(\overline{P}_{ij} - \operatorname{sign}(\tilde{f}_{ij}) f^a_{ij})$ is the slack of the anchor toward the same limit, and $0/0 = 0$. When the anchor satisfies the thermal limits, $o_{ij}/(o_{ij} + s_{ij})$ is the smallest step from $\tilde{\boldsymbol{p}}$ toward $\boldsymbol{p}^a$ that brings branch $(i,j)$ within its limit, so $\hat{\boldsymbol{p}}$ is the point of the segment from $\tilde{\boldsymbol{p}}$ to $\boldsymbol{p}^a$ that is closest to $\tilde{\boldsymbol{p}}$ and satisfies every thermal limit. Figure~\ref{fig:line_repair} illustrates the layer.
+
+\begin{figure}[t]
+    \centering
+    \input{figs/line_repair}
+    \caption{The line flow repair layer moves $\tilde{\boldsymbol{p}}$ toward the anchor $\boldsymbol{p}^a$ just far enough to satisfy every thermal limit. The example has three generators with $\overline{\boldsymbol{p}} = (1, 1, 1)$ and $\mathbf{e}^T \boldsymbol{d} = 1.5$, in the plane of $(p_1, p_2)$ with $p_3 = \mathbf{e}^T \boldsymbol{d} - p_1 - p_2$, and two branches with $f_1 = p_1 - p_2$, $\overline{P}_1 = 0.4$, and $f_2 = 2p_1 + p_2 - 1.6$, $\overline{P}_2 = 0.5$. The dispatch $\tilde{\boldsymbol{p}} = (0.9, 0.15)$ overloads branch 1 by $o_1 = 0.35$, and the anchor $\boldsymbol{p}^a = (0.45, 0.5)$ has slack $s_1 = 0.45$ toward that limit, so $\alpha = 0.35/0.8$ and $\hat{\boldsymbol{p}} \approx (0.70, 0.30)$ lies on the limit $f_1 = \overline{P}_1$.}
+    \label{fig:line_repair}
+\end{figure}
+
+\begin{proposition} \label{prop:line_repair}
+If $\tilde{\boldsymbol{p}}$ and $\boldsymbol{p}^a$ satisfy \eqref{eq:r_plim}--\eqref{eq:r_res} and $|f^a_{ij}| \leq \overline{P}_{ij}$ for every branch $(i,j) \in \mathcal{E}$, then $\hat{\boldsymbol{p}}$ and $\theta(\hat{\boldsymbol{p}})$ satisfy \eqref{eq:r_plim}--\eqref{eq:r_th}.
+\end{proposition}
+\begin{proof}
+Every ratio in \eqref{eq:line_repair} lies in $[0, 1]$, so $\alpha \in [0, 1]$ and $\hat{\boldsymbol{p}}$ is a convex combination of $\tilde{\boldsymbol{p}}$ and $\boldsymbol{p}^a$. The sets defined by \eqref{eq:r_plim} and \eqref{eq:r_pb} are convex, and so is the set defined by \eqref{eq:r_res}, because $\boldsymbol{p} \mapsto \mathbf{e}^T \min(\overline{\boldsymbol{r}}, \overline{\boldsymbol{p}} - \boldsymbol{p})$ is a sum of minima of affine functions and hence concave. So $\hat{\boldsymbol{p}}$ satisfies \eqref{eq:r_plim}--\eqref{eq:r_res}, and $\theta(\hat{\boldsymbol{p}})$ satisfies \eqref{eq:r_dcpf} by construction. The flows are affine in $\boldsymbol{p}$, so $f(\hat{\boldsymbol{p}}) = (1 - \alpha) \tilde{f} + \alpha f^a$. A branch with $|\tilde{f}_{ij}| \leq \overline{P}_{ij}$ satisfies its limit at both ends of the segment, and hence at $\hat{\boldsymbol{p}}$. For a branch with $\tilde{f}_{ij} > \overline{P}_{ij}$, we have $o_{ij} = \tilde{f}_{ij} - \overline{P}_{ij}$ and $s_{ij} = \overline{P}_{ij} - f^a_{ij}$, so $\alpha \geq o_{ij} / (o_{ij} + s_{ij}) = (\tilde{f}_{ij} - \overline{P}_{ij}) / (\tilde{f}_{ij} - f^a_{ij})$ and
+\[
+    f_{ij}(\hat{\boldsymbol{p}}) = \tilde{f}_{ij} - \alpha (\tilde{f}_{ij} - f^a_{ij}) \leq \tilde{f}_{ij} - (\tilde{f}_{ij} - \overline{P}_{ij}) = \overline{P}_{ij},
+\]
+while $f_{ij}(\hat{\boldsymbol{p}}) \geq \min(\tilde{f}_{ij}, f^a_{ij}) \geq -\overline{P}_{ij}$. The case $\tilde{f}_{ij} < -\overline{P}_{ij}$ is symmetric.
+\end{proof}
+
+When the anchor violates a thermal limit, $\hat{\boldsymbol{p}}$ still satisfies \eqref{eq:r_plim}--\eqref{eq:r_res} but may violate \eqref{eq:r_th}. Checking the condition of Proposition~\ref{prop:line_repair} for an instance takes $O(|\mathcal{E}|)$ operations.
+
+The layer is fast. The PTDF matrix $\boldsymbol{\Phi}$ and the matrix $\boldsymbol{\Phi}_g = \boldsymbol{\Phi} \boldsymbol{C}_g$ depend only on the network, so they are computed once, before training. The flows are then $f(\boldsymbol{p}) = \boldsymbol{\Phi}_g \boldsymbol{p} - \boldsymbol{\Phi} \boldsymbol{d}$, and the term $\boldsymbol{\Phi} \boldsymbol{d}$ is shared by $\tilde{f}$ and $f^a$. Per instance, the layer costs the second output head, a second pass through the repair layers of E2ELR, one product with $\boldsymbol{\Phi}$, two products with $\boldsymbol{\Phi}_g$, and $O(|\mathcal{E}|)$ element-wise operations and a maximum. It has no iterations and calls no solver. Like the repair layers of E2ELR, it is differentiable almost everywhere: the gradient reaches both $\tilde{\boldsymbol{p}}$ and $\boldsymbol{p}^a$ through the branch that attains the maximum in \eqref{eq:line_repair}.
+
+\subsection{Training}
+\begin{figure}[t]
+    \centering
+    \input{figs/architecture}
+    \caption{The E2ELR-L architecture. A second sigmoid head predicts the anchor; both heads go through the repair layers of E2ELR, and the line flow repair layer combines them. The loss is the self-supervised loss on $\hat{\boldsymbol{p}}$ plus the anchor term \eqref{eq:anchor}.}
+    \label{fig:architecture}
+\end{figure}
+
+We call the resulting model E2ELR-L (Figure~\ref{fig:architecture}). As for E2ELR, its loss is the self-supervised loss of the paper without the power balance and reserve penalty ($\lambda = 0$ in the paper), which the repair layers make zero. On $\hat{\boldsymbol{p}}$, this loss is the cost $\boldsymbol{c}^T \hat{\boldsymbol{p}}$ plus the thermal term of \eqref{eq:penalty}. We add the anchor term
 \begin{align}
-    \theta^* = \theta + \boldsymbol{B}^{\dagger}(\boldsymbol{p} - \boldsymbol{d} - \boldsymbol{B}\theta) \label{eq:theta_repair}
+    M_{th} \sum_{(i,j) \in \mathcal{E}} \operatorname{Relu}(|f^a_{ij}| - (1 - \delta) \overline{P}_{ij}), \label{eq:anchor}
 \end{align}
-where $\boldsymbol{B}^{\dagger}$ is the Moore-Penrose pseudo-inverse of $\boldsymbol{B}$. $\boldsymbol{B}$ is a sparse matrix, thus the pseudo-inverse can be computed efficiently and matrix-vector multiplication with $\boldsymbol{B}^{\dagger}$ can also be computed efficiently; every operation in equation \ref{eq:theta_repair} can be implemented efficiently.
+which pushes the anchor inside the thermal limits with a margin $\delta$. When this term is zero, $s_{ij} \geq \delta \overline{P}_{ij}$ for every branch, so $\alpha < 1$; the margin is also meant to keep the anchor feasible on instances outside the training set. The cost of the anchor does not enter the loss directly; it matters only through $\hat{\boldsymbol{p}}$.
 
 
 \section{Experiments}
 \subsection{Experimental Setup}
-The experimental setup is the same as in the paper, except $\lambda = 1.0$, and for the hyperparameter tuning. The hyperparameter tuning is done using Optuna's~\cite{Akiba2019_Optuna} hyperparameter optimization with 25 trials, and ASHAScheduler~\cite{Li2020_ASHA} for early stopping. Additionally, due to the constraints added to the problem, we add the parameter $M_{dc} = 3500 \frac{\$}{MW}$ for the penalty term of the DC power flow equations, which is the same as the power balance parameter $M_{pb}$. The datasets which were tested for are ieee300, and pegase 1354.
+We use the ED-R instances of the paper~\cite{Chen2023_E2ELR} on the ieee300 and pegase1354 systems, with hard thermal limits. With hard limits, about 20\% of the paper's instances, the high-load ones, are infeasible, so we generate instances as in the paper and keep the first 50{,}000 that are feasible (79.2\% of the generated instances on ieee300 and 80.6\% on pegase1354). They are split 80/10/10 into training, validation and test sets, and their optimal solutions are computed with HiGHS. E2ELR and E2ELR-L are trained with the self-supervised loss and the training settings of the paper (Adam with learning rate $10^{-2}$, batch size 64, three hidden layers of 256 units, learning rate decay on plateau and early stopping), without a hyperparameter search, and with $\delta = 0.05$ for E2ELR-L. The optimality gap uses the penalized objective of the paper, so overloads are priced at $M_{th}$, and a prediction is feasible if it satisfies \eqref{eq:r_plim}--\eqref{eq:r_th} within $10^{-4}$~p.u.
 
 \subsection{Results}
-The hyperparameter tuning results are shown in Tables~\ref{tab:hparam_ieee300} and~\ref{tab:hparam_pegase1354}.
+Table~\ref{tab:results} reports the test set results, and Table~\ref{tab:repair_vs_projection} the time to restore feasibility, as in the paper.
 
-\begin{table}[h]
+\begin{table}[!ht]
 \centering
-\caption{Best hyperparameters found -- ieee300 dataset.}
-\label{tab:hparam_ieee300}
-\begin{tabular}{lccc}
-\toprule
-\textbf{Hyperparameter} & \textbf{DNN} & \textbf{E2ELR} & \textbf{E2ELRDC} \\
-\midrule
-Layers      & 2 & 2 & 2 \\
-Hidden dim  & 512 & 256 & 128 \\
-Learning rate & $1.135 \times 10^{-4}$ & $8.566 \times 10^{-4}$ & $1.026 \times 10^{-4}$ \\
-Batch size  & 128 & 256 & 128 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{Best hyperparameters found -- pegase1354 dataset.}
-\label{tab:hparam_pegase1354}
-\begin{tabular}{lccc}
-\toprule
-\textbf{Hyperparameter} & \textbf{DNN} & \textbf{E2ELR} & \textbf{E2ELRDC} \\
-\midrule
-Layers      & 4 & 3 & 2 \\
-Hidden dim  & 512 & 128 & 128 \\
-Learning rate & $1.746 \times 10^{-4}$ & $7.141 \times 10^{-4}$ & $5.275 \times 10^{-3}$ \\
-Batch size  &  64 & 128 & 128 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-It is noteworthy that the more constrained the output of the network is, the fewer layers and smaller hidden dimension that is found to be optimal; this indicates that the extra parameters in the network are used to learn how to satisfy the constraints. For the pegase1354 dataset, the more constrained the output of the network is, the higher learning rate that is found to be optimal. The relation could be because the more constrained the output of the network is, the faster the network can learn, but this fact is not observed in the ieee300 dataset and thus it is not clear if it is a real relation or just a coincidence.
-
-Training the networks using the hyperparameters shown above, we get the following results for the test set shown in Tables~\ref{tab:results_ieee300} and~\ref{tab:results_pegase1354}.
-
-\begin{table}[h]
-\centering
-\caption{Test set results -- ieee300 dataset.}
-\label{tab:results_ieee300}
+\caption{Test set results with hard thermal limits.}
+\label{tab:results}
 {\small\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lcccccc}
+\begin{tabular}{llcccccc}
 \toprule
-\textbf{Model} & \textbf{Gap} & \textbf{SGM Gap} & \textbf{PB feas.} & \textbf{PB viol.}$^{*}$ & \textbf{Res. feas.} & \textbf{Inference}$^{\dagger}$ \\
- & (\%) & (\%) & (\%) & (pu) & (\%) & (ms) \\
+\textbf{System} & \textbf{Model} & \textbf{Gap} & \textbf{SGM Gap} & \textbf{Feasible}$^{*}$ & \textbf{Overload}$^{\dagger}$ & \textbf{Anchor feas.} & \textbf{Inference}$^{\ddagger}$ \\
+ & & (\%) & (\%) & (\%) & (p.u.) & (\%) & (ms) \\
 \midrule
-DNN     & 81.05 & 63.06 & 0.02 & 0.69 & 98.08 & \textbf{0.71} \\
-E2ELR   & \textbf{1.09} & \textbf{1.05} & \textbf{100.00} & -- & \textbf{100.00} & 1.16 \\
+ieee300    & E2ELR   & 0.88 & 0.87 & 92.72 & $1.4 \times 10^{-3}$ & -- & \textbf{1.38} \\
+           & E2ELR-L & \textbf{0.47} & \textbf{0.46} & \textbf{99.62} & $\mathbf{2.3 \times 10^{-5}}$ & 91.78 & 3.61 \\
+\midrule
+pegase1354 & E2ELR   & 0.64 & 0.62 & 91.00 & $4.6 \times 10^{-3}$ & -- & \textbf{2.48} \\
+           & E2ELR-L & \textbf{0.38} & \textbf{0.37} & \textbf{100.00} & \textbf{0} & 100.00 & 10.34 \\
 \bottomrule
 \end{tabular}}\\[2pt]
-{\footnotesize $^{*}$Shifted geometric mean (shift 1 pu) of the violations of infeasible predictions. $^{\dagger}$Per batch of 256 instances.}
+{\footnotesize SGM: shifted geometric mean with a 1\% shift, as in the paper. $^{*}$Satisfies \eqref{eq:r_plim}--\eqref{eq:r_th}; both models satisfy \eqref{eq:r_plim}--\eqref{eq:r_dcpf} on every instance. $^{\dagger}$Mean over the test set of the total overload. $^{\ddagger}$Per batch of 256 instances, with float64 repair layers on the CPU; median of three runs, all models under the same conditions.}
 \end{table}
 
-\begin{table}[h]
+\begin{table}[!ht]
 \centering
-\caption{Test set results -- pegase1354 dataset.}
-\label{tab:results_pegase1354}
-{\small\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lcccccc}
-\toprule
-\textbf{Model} & \textbf{Gap} & \textbf{SGM Gap} & \textbf{PB feas.} & \textbf{PB viol.}$^{*}$ & \textbf{Res. feas.} & \textbf{Inference}$^{\dagger}$ \\
- & (\%) & (\%) & (\%) & (pu) & (\%) & (ms) \\
-\midrule
-DNN     & 91.69 & 75.07 & 0.00 & 1.49 & 100.00 & \textbf{0.75} \\
-E2ELR   & \textbf{0.82} & \textbf{0.78} & \textbf{100.00} & -- & 100.00 & 1.34 \\
-\bottomrule
-\end{tabular}}\\[2pt]
-{\footnotesize $^{*}$Shifted geometric mean (shift 1 pu) of the violations of infeasible predictions. $^{\dagger}$Per batch of 256 instances.}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{Feasibility restoration time per instance (ED-R): repair layers (RL) vs Euclidean projection (EP).}
+\caption{Feasibility restoration time per instance: repair layers (RL) vs Euclidean projection (EP).}
 \label{tab:repair_vs_projection}
 {\small
-\begin{tabular}{lccccc}
+\begin{tabular}{llccccc}
 \toprule
-\textbf{System} & \textbf{RL, single} & \textbf{RL, batch}$^{*}$ & \textbf{EP}$^{\dagger}$ & \multicolumn{2}{c}{\textbf{Speedup}} \\
- & ($\mu$s) & ($\mu$s) & (ms) & single & batch \\
+\textbf{System} & \textbf{Model} & \textbf{RL, single} & \textbf{RL, batch}$^{*}$ & \textbf{EP}$^{\dagger}$ & \multicolumn{2}{c}{\textbf{Speedup}} \\
+ & & ($\mu$s) & ($\mu$s) & (ms) & single & batch \\
 \midrule
-ieee300    & 105.6 & 1.22 & 1.78  & 17$\times$  & 1457$\times$ \\
-pegase1354 & 88.4  & 1.88 & 25.96 & 294$\times$ & 13800$\times$ \\
+ieee300    & E2ELR   & 129.4 & 1.78 & 2.06 & 16$\times$ & 1157$\times$ \\
+           & E2ELR-L & 202.5 & 4.50 & 8.87 & 44$\times$ & 1971$\times$ \\
+\midrule
+pegase1354 & E2ELR   & 212.9 & 3.93 & 43.22 & 203$\times$ & 10996$\times$ \\
+           & E2ELR-L & 509.1 & 44.86 & 399.34 & 784$\times$ & 8901$\times$ \\
 \bottomrule
 \end{tabular}}\\[2pt]
-{\footnotesize Medians over the initial predictions of the trained E2ELR backbone on 100 test instances. $^{*}$100 instances repaired at once, time divided by 100. $^{\dagger}$QP solved with HiGHS on one thread.}
+{\footnotesize Medians over the initial predictions of the trained backbone on 100 test instances. $^{*}$100 instances repaired at once, time divided by 100. $^{\dagger}$QP solved with HiGHS on one thread; for E2ELR-L the feasible set includes the thermal limits, and the QP failed on 2 of the 100 pegase1354 instances.}
 \end{table}
 
-These results show that adding the theta repair layer significantly reduces the DC power flow violation, and also significantly reduces the optimality gap. although the addition of the theta repair layer does help it is clear that the results still leave a lot to desire, and there is still a significant gap between the E2ELRDC model and the optimal solution. 
+On both systems, E2ELR-L almost halves the optimality gap of E2ELR, from 0.88\% to 0.47\% on ieee300 and from 0.64\% to 0.38\% on pegase1354, and it raises the share of predictions that are feasible for the DC-OPF from 92.7\% to 99.6\% and from 91.0\% to 100\%. The overload penalty accounts for only about 5\% (ieee300) and 9\% (pegase1354) of the gap of E2ELR, so E2ELR-L also finds cheaper dispatches; a likely reason is that its first head no longer has to keep away from the thermal limits, because the layer enforces them. The condition of Proposition~\ref{prop:line_repair} is conservative: on ieee300 only 91.8\% of the anchors satisfy the thermal limits, yet 99.6\% of the outputs do, because the step that removes the overloads of $\tilde{\boldsymbol{p}}$ often stops before it reaches a branch that the anchor overloads.
+
+The line flow repair layer is slower than the repair layers of E2ELR: inference takes about 2.6 times as long on ieee300 and 4.2 times as long on pegase1354, mostly because of the product with the dense PTDF matrix $\boldsymbol{\Phi}$ ($1991 \times 1354$ on pegase1354). It remains much faster than restoring feasibility with a solver: 44 and 784 times faster than the Euclidean projection onto the DC-OPF feasible set for a single instance, and three to four orders of magnitude faster in batches.
 
 \section{Conclusion}
-Although the idea proposed in the previous paper for using closed form repair layers is not easily extendable to new constraints. by understanding the structure of the constraints or adding constraints with new variables, it is possible to design additional and efficient repair layers, yet this will not always yield great results out of the box.
+The repair layers of E2ELR restore power balance and reserves in closed form, but they do not enforce the hard thermal limits of a DC-OPF, which couple the generators through the network. We showed that a closed-form layer can still enforce them when the network also predicts a dispatch that satisfies them: moving the prediction toward this anchor by the smallest step that removes every overload keeps the guarantees of E2ELR, and adds the thermal limits whenever the anchor satisfies them. On ieee300 and pegase1354, this almost halves the optimality gap of E2ELR and makes 99.6\% and 100\% of the predictions feasible, in about 4 and 10~ms per batch of 256 instances. The guarantee still depends on a learned anchor; an anchor that is feasible by construction would make the layer unconditional.
 
 
 \bibliographystyle{plain}
 \bibliography{refs}
 
 \end{document}
-
-

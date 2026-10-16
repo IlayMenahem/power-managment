@@ -25,7 +25,7 @@ import mlx.optimizers as optim
 import numpy as np
 from data_utils import M_PB, M_RES, M_TH, Case, Instances
 from mlx.utils import tree_map
-from models import bus_injection, f64
+from models import ProxyOutput, bus_injection, f64
 
 # Default constraint penalty weight per training mode (paper, Appendix B).
 DEFAULT_LAM = {"ssl": 1.0, "sl": 1e-4}
@@ -38,6 +38,9 @@ def default_lam(mode: str, arch: str) -> float:
 # Validation always uses unit penalty weight, so that for SSL the validation
 # loss equals the penalized objective used for the optimality gap.
 VAL_LAM = 1.0
+
+# delta: e2elr_line trains its anchor to keep |flow| <= (1 - delta) rate.
+ANCHOR_MARGIN = 0.05
 
 
 @dataclass(frozen=True)
@@ -53,9 +56,12 @@ class GridTensors:
     rate: mx.array  # (n_branch,)
     branch_from: mx.array  # (n_branch,)
     branch_to: mx.array  # (n_branch,)
+    anchor_rate: mx.array  # (n_branch,) (1 - anchor_margin) * rate
 
     @staticmethod
-    def from_case(case: Case, r_max: np.ndarray) -> "GridTensors":
+    def from_case(
+        case: Case, r_max: np.ndarray, anchor_margin: float = ANCHOR_MARGIN
+    ) -> "GridTensors":
         def idx(x: np.ndarray) -> mx.array:
             return mx.array(x.astype(np.int32))
 
@@ -69,6 +75,7 @@ class GridTensors:
             rate=f64(case.rate),
             branch_from=idx(case.branch_from),
             branch_to=idx(case.branch_to),
+            anchor_rate=f64((1.0 - anchor_margin) * case.rate),
         )
 
 
@@ -86,6 +93,9 @@ class Violations:
     thermal: mx.array  # sum over branches of max(0, |f| - rate)
     max_overload: mx.array  # max over branches of max(0, |f| - rate)
     dc: mx.array  # max over buses of |B theta - (pg_bus - pd)|, a sanity check
+    # e2elr_line only (0 otherwise): the repaired anchor's overloads
+    anchor_overload: mx.array  # sum over branches of max(0, |f_a| - anchor_rate)
+    anchor_max_overload: mx.array  # max over branches of max(0, |f_a| - rate)
 
     def hard_penalty(self) -> mx.array:
         """Hard constraint penalty psi (Eq. 8)."""
@@ -97,8 +107,9 @@ class Violations:
 
 
 def compute_violations(
-    pg: mx.array, theta: mx.array, pd: mx.array, R: mx.array, grid: GridTensors
+    out: ProxyOutput, pd: mx.array, R: mx.array, grid: GridTensors
 ) -> Violations:
+    pg, theta = out.pg, out.theta
     flow = grid.b_branch * (theta[:, grid.branch_from] - theta[:, grid.branch_to])
     # B @ theta = A^T flow: each branch flow leaves its from-bus and enters its to-bus
     flow_out = (
@@ -110,18 +121,25 @@ def compute_violations(
     )
     r_star = mx.minimum(grid.r_max, grid.pg_max - pg)
     overload = mx.maximum(mx.abs(flow) - grid.rate, 0.0)
+    if out.anchor_flow is None:
+        anchor_overload = anchor_max_overload = mx.zeros_like(overload[:, 0])
+    else:
+        abs_flow_a = mx.abs(out.anchor_flow)
+        anchor_overload = mx.maximum(abs_flow_a - grid.anchor_rate, 0.0).sum(axis=-1)
+        anchor_max_overload = mx.maximum(abs_flow_a - grid.rate, 0.0).max(axis=-1)
     return Violations(
         power_balance=mx.abs(pg.sum(axis=-1) - pd.sum(axis=-1)),
         reserve=mx.maximum(R.squeeze(-1) - r_star.sum(axis=-1), 0.0),
         thermal=overload.sum(axis=-1),
         max_overload=overload.max(axis=-1),
         dc=mx.abs(flow_out - bus_injection(pg, pd, grid.gen_bus)).max(axis=-1),
+        anchor_overload=anchor_overload,
+        anchor_max_overload=anchor_max_overload,
     )
 
 
 def proxy_loss(
-    pg: mx.array,
-    theta: mx.array,
+    out: ProxyOutput,
     pd: mx.array,
     R: mx.array,
     pg_star: mx.array,
@@ -130,19 +148,24 @@ def proxy_loss(
     lam: float,
 ) -> mx.array:
     """
-    SSL: L = cost(pg) + M_TH * thermal + lam * psi        (Eq. 12)
-    SL : L = MAE(pg, pg_star) + lam * (psi + M_TH * thermal)
+    SSL: L = cost(pg) + M_TH * (thermal + anchor) + lam * psi        (Eq. 12)
+    SL : L = MAE(pg, pg_star) + lam * (psi + M_TH * (thermal + anchor))
          (Eq. 10, thermal weight mu = lam); instances without a ground-truth
          solution (NaN pg_star) are left out of the MAE.
+    anchor is the anchor's overload of the tightened limits (1 - delta) rate
+    (e2elr_line; 0 otherwise).
     """
-    v = compute_violations(pg, theta, pd, R, grid)
+    v = compute_violations(out, pd, R, grid)
+    line_penalty = M_TH * (v.thermal + v.anchor_overload)
+    pg = out.pg
     if mode == "ssl":
-        objective = pg @ grid.cost + M_TH * v.thermal
+        objective = pg @ grid.cost + line_penalty
         return objective.mean() + lam * v.hard_penalty().mean()
     valid = ~mx.isnan(pg_star).any(axis=-1, keepdims=True)  # (batch, 1)
     err = mx.where(valid, mx.abs(pg - pg_star), 0.0)
     n_valid = valid.sum() * pg.shape[-1]
-    return err.sum() / mx.maximum(n_valid, 1) + lam * v.penalty().mean()
+    penalty = v.hard_penalty() + line_penalty
+    return err.sum() / mx.maximum(n_valid, 1) + lam * penalty.mean()
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +229,7 @@ def _batch_loss(
 ) -> mx.array:
     with mx.stream(mx.cpu):
         pd, R, pg_star, _ = _unpack(batch)
-        pg, theta = model(pd, R)
-        return proxy_loss(pg, theta, pd, R, pg_star, grid, mode, lam)
+        return proxy_loss(model(pd, R), pd, R, pg_star, grid, mode, lam)
 
 
 class PlateauScheduler:
@@ -387,17 +409,24 @@ def evaluate_model(
         violations of infeasible predictions (see violation_stats)
       - line feasibility rate (every |flow| <= rate + tol) and mean thermal
         violation
+      - DC-OPF feasibility rate: feasible and every line within its hard limit
+      - anchor line feasibility rate (e2elr_line; NaN otherwise)
       - mean largest per-bus DC residual (a sanity check, ~0)
     """
     model.eval()
-    losses, gaps, pb, reserve, thermal, dc, feasible, line_ok = ([] for _ in range(8))
+    losses, gaps, pb, reserve, thermal, dc, feasible, line_ok, anchor_ok = (
+        [] for _ in range(9)
+    )
+    has_anchor = False
     for batch in dataset.batches(batch_size):
         with mx.stream(mx.cpu):
             pd, R, pg_star, obj_star = _unpack(batch)
-            pg, theta = model(pd, R)
-            v = compute_violations(pg, theta, pd, R, grid)
+            out = model(pd, R)
+            has_anchor = out.anchor_flow is not None
+            v = compute_violations(out, pd, R, grid)
 
-            loss = proxy_loss(pg, theta, pd, R, pg_star, grid, mode, lam)
+            loss = proxy_loss(out, pd, R, pg_star, grid, mode, lam)
+            pg = out.pg
             z_hat = pg @ grid.cost + v.penalty()
             gap = (z_hat - obj_star) / mx.maximum(mx.abs(obj_star), 1e-8)  # NaN w/o GT
             in_bounds = (
@@ -405,11 +434,16 @@ def evaluate_model(
             ).all(axis=-1)
             ok = in_bounds & (v.power_balance < tol) & (v.reserve < tol) & (v.dc < tol)
             lines = v.max_overload < tol
-            mx.eval(loss, gap, ok, lines, v.power_balance, v.reserve, v.thermal, v.dc)
+            anchor_lines = v.anchor_max_overload < tol
+            mx.eval(
+                loss, gap, ok, lines, anchor_lines,
+                v.power_balance, v.reserve, v.thermal, v.dc,
+            )  # fmt: skip
         losses.append(loss.item())
         gaps.append(np.array(gap))
         feasible.append(np.array(ok))
         line_ok.append(np.array(lines))
+        anchor_ok.append(np.array(anchor_lines))
         pb.append(np.array(v.power_balance))
         reserve.append(np.array(v.reserve))
         thermal.append(np.array(v.thermal))
@@ -420,6 +454,7 @@ def evaluate_model(
     has_gaps = len(valid_gaps) > 0
     pb_feasible, pb_sgm = violation_stats(np.concatenate(pb), tol)
     res_feasible, res_sgm = violation_stats(np.concatenate(reserve), tol)
+    all_lines_ok = np.concatenate(line_ok)
     return {
         "test_loss": float(np.mean(losses)),
         "mean_gap_pct": 100.0 * valid_gaps.mean() if has_gaps else float("nan"),
@@ -429,7 +464,12 @@ def evaluate_model(
         "pb_violation_sgm_pu": pb_sgm,
         "reserve_feasible_pct": res_feasible,
         "reserve_violation_sgm_pu": res_sgm,
-        "line_feasibility_rate_pct": 100.0 * np.concatenate(line_ok).mean(),
+        "line_feasibility_rate_pct": 100.0 * all_lines_ok.mean(),
+        "opf_feasibility_rate_pct": 100.0
+        * (np.concatenate(feasible) & all_lines_ok).mean(),
+        "anchor_line_feasibility_rate_pct": (
+            100.0 * np.concatenate(anchor_ok).mean() if has_anchor else float("nan")
+        ),
         "mean_thermal_violation_pu": np.concatenate(thermal).mean(),
         "mean_max_dc_residual_pu": np.concatenate(dc).mean(),
     }

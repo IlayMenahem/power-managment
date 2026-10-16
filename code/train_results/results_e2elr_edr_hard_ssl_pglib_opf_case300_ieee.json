@@ -1,0 +1,40 @@
+{
+  "case": "data/pglib_opf_case300_ieee.m",
+  "model": "e2elr",
+  "problem": "edr",
+  "line_limits": "hard",
+  "mode": "ssl",
+  "config": {
+    "n_layers": 3,
+    "hidden_dim": 256,
+    "lr": 0.01,
+    "batch_size": 64,
+    "lam": 0.0,
+    "anchor_margin": 0.05
+  },
+  "training_time_min": 8.320557681719462,
+  "best_val_loss": 4930.8777724809115,
+  "results": {
+    "test_loss": 4911.617670243389,
+    "mean_gap_pct": 0.883682636090721,
+    "sgm_gap_pct": 0.867022637243285,
+    "feasibility_rate_pct": 100.0,
+    "pb_feasible_pct": 100.0,
+    "pb_violation_sgm_pu": NaN,
+    "reserve_feasible_pct": 100.0,
+    "reserve_violation_sgm_pu": NaN,
+    "line_feasibility_rate_pct": 92.72,
+    "opf_feasibility_rate_pct": 92.72,
+    "anchor_line_feasibility_rate_pct": NaN,
+    "mean_thermal_violation_pu": 0.0014179288327661997,
+    "mean_max_dc_residual_pu": 6.255174256342144e-11,
+    "inference_ms_per_256": 0.9330410393886268,
+    "repair_us": 129.37502469867468,
+    "repair_batch_us": 1.7829099670052528,
+    "projection_us": 2063.5625114664435,
+    "projection_speedup": 15.950238589500982,
+    "projection_failures": 0.0,
+    "repair_dist_pu": 0.22671302425259984,
+    "projection_dist_pu": 0.17080276949327966
+  }
+}
